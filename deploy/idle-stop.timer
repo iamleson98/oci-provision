@@ -1,0 +1,10 @@
+[Unit]
+Description=Check controller idle state every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

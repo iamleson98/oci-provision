@@ -1,0 +1,87 @@
+name: Plan (dry run)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_profile:
+        description: "A1 worker profile"
+        type: choice
+        options: ["always-on", "burst"]
+        default: "always-on"
+      enable_waker:
+        description: "Create the free AMD micro waker VM"
+        type: boolean
+        default: true
+      availability_domain_index:
+        description: "AD index (0-2) - change when hitting out-of-capacity"
+        default: "0"
+      admin_cidr:
+        description: "CIDR allowed to SSH (ideally your IP/32)"
+        default: "0.0.0.0/0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
+          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
+          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
+          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
+          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          check OCI_NAMESPACE "${{ secrets.OCI_NAMESPACE }}"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Export terraform variables
+        env:
+          SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
+          COMPARTMENT: ${{ secrets.OCI_COMPARTMENT }}
+        run: |
+          {
+            echo "TF_VAR_auth=ApiKey"
+            echo "TF_VAR_region=$OCI_REGION"
+            echo "TF_VAR_tenancy_ocid=$OCI_TENANCY_OCID"
+            echo "TF_VAR_user_ocid=$OCI_USER_OCID"
+            echo "TF_VAR_fingerprint=$OCI_FINGERPRINT"
+            printf 'TF_VAR_private_key<<PEMEOF\n%s\nPEMEOF\n' "$(printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" | sed 's/\\n/\n/g')"
+            [ -n "$SSH_PUB" ] && echo "TF_VAR_ssh_public_key=$SSH_PUB"
+            echo "TF_VAR_runner_profile=${{ inputs.runner_profile }}"
+            echo "TF_VAR_enable_waker=${{ inputs.enable_waker }}"
+            echo "TF_VAR_availability_domain_index=${{ inputs.availability_domain_index }}"
+            echo "TF_VAR_admin_cidr=${{ inputs.admin_cidr }}"
+            [ -n "$COMPARTMENT" ] && echo "TF_VAR_compartment_ocid=$COMPARTMENT"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform init (state in OCI Object Storage)
+        run: bash scripts/tf_init.sh
+
+      - name: Terraform plan
+        run: terraform -ch-dir=terraform plan -input=false -no-color
+
+      - name: Summary
+        run: echo "Plan finished - full diff is in the 'Terraform plan' step log above." >> "$GITHUB_STEP_SUMMARY"

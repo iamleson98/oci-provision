@@ -1,0 +1,14 @@
+[Unit]
+Description=oci-github-runner waker (GitHub queue watcher + A1 lifecycle)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/oci-runner-waker/controller
+EnvironmentFile=/opt/oci-runner-waker/waker.env
+ExecStart=/opt/oci-runner-waker/venv/bin/python -u waker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

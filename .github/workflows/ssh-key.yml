@@ -1,0 +1,79 @@
+name: Get SSH key (artifact)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # upload the key artifact
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  ssh-key:
+    name: export generated key as 1-day artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
+          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
+          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
+          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
+          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          check OCI_NAMESPACE "${{ secrets.OCI_NAMESPACE }}"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Terraform init
+        run: bash scripts/tf_init.sh
+
+      - name: Read key from state
+        run: |
+          terraform -ch-dir=terraform output -raw ssh_private_key_pem > key.pem
+          if [ ! -s key.pem ]; then
+            echo "::notice::state has no generated key (a custom SSH key was provided) - nothing to export"
+            echo "CUSTOM_KEY=true" >> "$GITHUB_ENV"
+          else
+            chmod 600 key.pem
+          fi
+
+      - name: Upload as a 1-day artifact
+        if: ${{ env.CUSTOM_KEY != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-ssh-private-key
+          path: key.pem
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          {
+            echo "## SSH key"
+            if [ "${CUSTOM_KEY:-}" = "true" ]; then
+              echo "You provided your own keypair (SSH_PUBLIC_KEY secret) - use your own private key."
+            else
+              echo "The generated private key is in the **vm-ssh-private-key** artifact (valid 1 day)."
+              echo "\`chmod 600 key.pem && ssh -i key.pem ubuntu@<a1-ip>\`"
+              echo "Delete the artifact after saving the key."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

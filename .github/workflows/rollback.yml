@@ -1,0 +1,86 @@
+name: Rollback (destroy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DESTROY to confirm teardown of ALL provisioned resources"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    name: terraform destroy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+    steps:
+      - name: Confirmation gate
+        run: |
+          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
+            echo "::error::input 'confirm' must be exactly DESTROY (this tears down VMs, VCN, IAM policy)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
+          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
+          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
+          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
+          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          check OCI_NAMESPACE "${{ secrets.OCI_NAMESPACE }}"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Export terraform variables
+        env:
+          SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
+          COMPARTMENT: ${{ secrets.OCI_COMPARTMENT }}
+        run: |
+          {
+            echo "TF_VAR_auth=ApiKey"
+            echo "TF_VAR_region=$OCI_REGION"
+            echo "TF_VAR_tenancy_ocid=$OCI_TENANCY_OCID"
+            echo "TF_VAR_user_ocid=$OCI_USER_OCID"
+            echo "TF_VAR_fingerprint=$OCI_FINGERPRINT"
+            printf 'TF_VAR_private_key<<PEMEOF\n%s\nPEMEOF\n' "$(printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" | sed 's/\\n/\n/g')"
+            [ -n "$SSH_PUB" ] && echo "TF_VAR_ssh_public_key=$SSH_PUB"
+            [ -n "$COMPARTMENT" ] && echo "TF_VAR_compartment_ocid=$COMPARTMENT"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        run: bash scripts/tf_init.sh
+
+      - name: Terraform destroy
+        run: terraform -ch-dir=terraform destroy -input=false -auto-approve -no-color
+
+      - name: Summary
+        run: |
+          {
+            echo "## Rollback complete"
+            echo "- Instances, VCN and IAM policy destroyed"
+            echo "- The (empty) state file and its version history remain in the state bucket"
+            echo "- Re-run **Provision** anytime to rebuild from scratch"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,5 @@
+# Installed on the waker VM only (not needed inside the controller container).
+oci>=2.128,<3
+requests>=2.31,<3
+PyJWT>=2.8,<3
+cryptography>=42

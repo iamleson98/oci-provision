@@ -1,0 +1,26 @@
+# secrets
+.env
+deploy/secrets/*.pem
+*.pem
+waker.env
+key.pem
+doctor.log
+
+# terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate*
+terraform/*.tfstate*
+terraform/hosts.mk
+terraform/terraform.tfvars
+terraform/*.tfvars
+!terraform/terraform.tfvars.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# misc
+.DS_Store
+*.log

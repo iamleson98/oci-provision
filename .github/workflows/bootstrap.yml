@@ -1,0 +1,75 @@
+name: Bootstrap (one-time)
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_versioning:
+        description: "Make sure bucket versioning is enabled (also upgrades an existing bucket)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: create state bucket + report namespace
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_CLI_AUTH: api_key
+      TF_STATE_BUCKET: oci-provision-tfstate
+    steps:
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
+          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
+          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
+          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
+          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Install OCI CLI
+        run: |
+          python3 -m pip install --user --quiet oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Create versioned state bucket + read namespace
+        run: |
+          set -euo pipefail
+          NS="$(oci os ns get --query data --raw-output)"
+          echo "OCI_NAMESPACE=$NS" >> "$GITHUB_ENV"
+          if oci os bucket get --bucket-name "$TF_STATE_BUCKET" >/dev/null 2>&1; then
+            echo "bucket '$TF_STATE_BUCKET' already exists"
+            if [ "${{ inputs.enable_versioning }}" = "true" ]; then
+              oci os bucket update --bucket-name "$TF_STATE_BUCKET" --versioning Enabled >/dev/null \
+                && echo "versioning enabled" || echo "::warning::could not enable versioning - do it in the console"
+            fi
+          else
+            oci os bucket create --bucket-name "$TF_STATE_BUCKET" \
+              --compartment-id "$OCI_CLI_TENANCY" --versioning Enabled >/dev/null \
+              && echo "bucket '$TF_STATE_BUCKET' created (versioning on)" \
+              || { oci os bucket create --bucket-name "$TF_STATE_BUCKET" --compartment-id "$OCI_CLI_TENANCY" >/dev/null \
+                   && echo "bucket created (versioning could not be set at create time)"; }
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "## Bootstrap done"
+            echo ""
+            echo "1. Add repo secret \`OCI_NAMESPACE\` = \`${OCI_NAMESPACE}\`"
+            echo "2. State bucket \`${TF_STATE_BUCKET}\` in \`${OCI_CLI_REGION}\` (versioning enabled - protects state history)"
+            echo "3. Next: run the **Provision** workflow"
+          } >> "$GITHUB_STEP_SUMMARY"

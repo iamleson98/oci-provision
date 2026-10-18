@@ -1,0 +1,184 @@
+name: Provision
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_profile:
+        description: "A1 worker profile (always-on = 2 OCPU/12GB 24/7 guaranteed-free; burst = 4/24 wake-on-demand)"
+        type: choice
+        options: ["always-on", "burst"]
+        default: "always-on"
+      enable_waker:
+        description: "Create the free AMD micro waker VM (self-heal + status page + burst wake)"
+        type: boolean
+        default: true
+      availability_domain_index:
+        description: "AD index (0-2) - change when hitting out-of-capacity"
+        default: "0"
+      admin_cidr:
+        description: "CIDR allowed to SSH (ideally your IP/32)"
+        default: "0.0.0.0/0"
+      repositories:
+        description: "owner/repo[,owner/repo2] the runners serve (blank = this repo)"
+        default: ""
+      max_runners:
+        description: "Max runner containers (blank = profile default: 2 always-on / 4 burst)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: terraform plan + apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    outputs:
+      a1_ip: ${{ steps.out.outputs.a1_ip }}
+      waker_ip: ${{ steps.out.outputs.waker_ip }}
+      a1_id: ${{ steps.out.outputs.a1_id }}
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
+          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
+          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
+          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
+          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          check OCI_NAMESPACE "${{ secrets.OCI_NAMESPACE }}"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Export terraform variables
+        env:
+          SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
+          COMPARTMENT: ${{ secrets.OCI_COMPARTMENT }}
+        run: |
+          {
+            echo "TF_VAR_auth=ApiKey"
+            echo "TF_VAR_region=$OCI_REGION"
+            echo "TF_VAR_tenancy_ocid=$OCI_TENANCY_OCID"
+            echo "TF_VAR_user_ocid=$OCI_USER_OCID"
+            echo "TF_VAR_fingerprint=$OCI_FINGERPRINT"
+            printf 'TF_VAR_private_key<<PEMEOF\n%s\nPEMEOF\n' "$(printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" | sed 's/\\n/\n/g')"
+            [ -n "$SSH_PUB" ] && echo "TF_VAR_ssh_public_key=$SSH_PUB"
+            echo "TF_VAR_runner_profile=${{ inputs.runner_profile }}"
+            echo "TF_VAR_enable_waker=${{ inputs.enable_waker }}"
+            echo "TF_VAR_availability_domain_index=${{ inputs.availability_domain_index }}"
+            echo "TF_VAR_admin_cidr=${{ inputs.admin_cidr }}"
+            [ -n "$COMPARTMENT" ] && echo "TF_VAR_compartment_ocid=$COMPARTMENT"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform init (state in OCI Object Storage)
+        run: bash scripts/tf_init.sh
+
+      - name: Terraform plan
+        run: terraform -ch-dir=terraform plan -input=false -no-color
+
+      - name: Terraform apply (auto-retries while OCI reports capacity shortage)
+        run: |
+          set +e
+          for attempt in $(seq 1 20); do
+            OUT=$(terraform -ch-dir=terraform apply -input=false -auto-approve -no-color 2>&1)
+            RC=$?
+            echo "$OUT"
+            [ $RC -eq 0 ] && exit 0
+            if printf '%s' "$OUT" | grep -qiE 'out of (host )?capacity'; then
+              echo "::warning::attempt $attempt hit 'Out of capacity' - retrying in 90s. If this persists: rerun with a different availability_domain_index (or a different region for a new account)."
+              sleep 90
+            else
+              exit $RC
+            fi
+          done
+          echo "::error::gave up after 20 capacity retries (~30 min). Try another AD via the availability_domain_index input, or wait a few hours."
+          exit 1
+
+      - name: Collect outputs
+        id: out
+        run: |
+          cd terraform
+          echo "a1_ip=$(terraform output -raw a1_public_ip)"       >> "$GITHUB_OUTPUT"
+          echo "a1_id=$(terraform output -raw a1_instance_id)"     >> "$GITHUB_OUTPUT"
+          echo "waker_ip=$(terraform output -raw waker_public_ip)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Provisioned"
+            echo "| VM | Public IP |"
+            echo "|---|---|"
+            echo "| A1 worker (${{ inputs.runner_profile }}) | \`${{ steps.out.outputs.a1_ip }}\` |"
+            echo "| Waker (AMD micro) | \`${{ steps.out.outputs.waker_ip }}\` |"
+            echo ""
+            echo "The runner stack is being installed by the **deploy-stack** job below (takes ~10 min: cloud-init, docker, image builds)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-stack:
+    name: deploy runner stack over SSH
+    needs: provision
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      RUNNER_GITHUB_PAT: ${{ secrets.RUNNER_GITHUB_PAT }}
+      GITHUB_REPOSITORIES: ${{ inputs.repositories || github.repository }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      WAKER_STATUS_TOKEN: ${{ secrets.WAKER_STATUS_TOKEN }}
+      MAX_RUNNERS: ${{ inputs.max_runners }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - runner PAT
+        run: |
+          [ -n "$RUNNER_GITHUB_PAT" ] || { echo "::error title=Missing secret::RUNNER_GITHUB_PAT is not set (classic PAT with repo scope - see docs/CI_DEPLOYMENT.md)"; exit 1; }
+
+      - name: Terraform init (state - IPs + generated SSH key)
+        run: bash scripts/tf_init.sh
+
+      - name: Deploy controller + waker
+        run: |
+          export A1_IP="${{ needs.provision.outputs.a1_ip }}"
+          export WAKER_IP="${{ needs.provision.outputs.waker_ip }}"
+          export A1_INSTANCE_ID="${{ needs.provision.outputs.a1_id }}"
+          export RUNNER_PROFILE="${{ inputs.runner_profile }}"
+          bash scripts/ci_deploy.sh
+
+      - name: Summary
+        run: |
+          {
+            echo "## Runner stack deployed"
+            echo ""
+            echo "- Runners serve: \`$GITHUB_REPOSITORIES\` with label \`oracle-a1\`"
+            echo "- In that repo's workflows use: \`runs-on: [self-hosted, oracle-a1]\` (see examples/)"
+            echo "- Status page: \`ssh -N -L 8080:localhost:8080 ubuntu@${{ needs.provision.outputs.a1_ip }}\` then http://localhost:8080"
+            echo "- Health: run the **Doctor** workflow anytime"
+          } >> "$GITHUB_STEP_SUMMARY"

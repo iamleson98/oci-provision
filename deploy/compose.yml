@@ -1,0 +1,21 @@
+services:
+  controller:
+    image: oci-runner/controller:latest
+    build: ../controller
+    container_name: oci-runner-controller
+    restart: unless-stopped
+    env_file: ../.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../secrets:/opt/oci-runner/secrets:ro
+    ports:
+      # Bound to localhost on the VM: reach it via SSH tunnel
+      #   ssh -N -L 8080:localhost:8080 ubuntu@<a1-ip>
+      # or publish publicly by editing this line (protect with STATUS_TOKEN).
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

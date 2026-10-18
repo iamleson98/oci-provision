@@ -1,0 +1,10 @@
+[Unit]
+Description=Power off the A1 worker VM when the controller reports deep idle
+ConditionPathExists=/etc/oci-runner/idle-stop.enabled
+After=docker.service
+
+[Service]
+Type=oneshot
+# The controller answers 200 "poweroff" only when: no queued jobs, no busy
+# runners, no running containers, and idle >= IDLE_STOP_MINUTES.
+ExecStart=/bin/sh -c 'curl -fsS -m 10 http://127.0.0.1:8080/idle-shutdown | grep -q poweroff && systemctl poweroff || true'

@@ -1,0 +1,47 @@
+# Example CI workflow that runs on your free Oracle ARM runner.
+# Copy to .github/workflows/ci.yml in YOUR repository (not this one).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true   # saves runner-hours on the free allowance
+
+jobs:
+  test:
+    # The custom label your runners register with (see RUNNER_LABELS)
+    runs-on: [self-hosted, oracle-a1]
+    timeout-minutes: 20      # always set a timeout on self-hosted runners
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-node has native linux-arm64 support
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm            # GitHub-hosted cache: faster + no VM disk growth
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Test
+        run: npm test
+
+      # Artifacts go to GitHub's storage, not the VM disk - keeps you free
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            coverage/
+            junit*.xml
+          if-no-files-found: ignore
+          retention-days: 7
