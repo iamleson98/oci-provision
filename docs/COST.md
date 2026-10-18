@@ -41,7 +41,7 @@ A1 experiment, use the burst profile or drop to 1 OCPU / 6 GB
 | A1 OCPU-h / month | 1,488 (always-on 2/12) | 1,500 | ~0.8% |
 | A1 GB-h / month | 8,928 | 9,000 | ~0.8% |
 | AMD micro (waker) | 1 VM × 1/8 OCPU, 1 GB | 2 VMs, **no hour limit** | 1 micro spare |
-| Block storage | 150 GB (A1 boot) + 47 GB (waker) | 200 GB total | ~3 GB (theoretical max: 153 GB A1 boot) |
+| Block storage | 147 GB (A1 boot) + 50 GB (waker) | 200 GB total | ~3 GB (theoretical max: 150 GB A1 boot; API minimum boot volume is 50 GB) |
 | Object storage (state) | bucket `oci-provision-tfstate`, KBs + version history | 20 GB + 50,000 API requests/month | ~100% |
 | Outbound transfer | typical CI: 20-100 GB/month | 10 TB / month | ~99% |
 | Volume backups | 0 | 5 | — |
@@ -119,7 +119,7 @@ money.
   per spawn (each POST counts against your API budget).
 * **Docker pruning** — the controller prunes images/volumes/build-cache
   every 6 h (keeping its own labeled images) and cloud-init adds a weekly
-  deep clean. The 150 GB boot volume stays lean without manual care.
+  deep clean. The 147 GB boot volume stays lean without manual care.
 * **Per-runner memory caps** (`--memory 5g`) prevent one runaway job from
   OOM-killing the others; swap gives a soft landing.
 * **`live-restore` + log rotation** in `daemon.json` — restarts don't kill

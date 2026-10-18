@@ -105,9 +105,9 @@ variable "a1_memory_gbs" {
 }
 
 variable "a1_boot_volume_gb" {
-  description = "Boot volume (GB) for the A1 worker. Always Free includes 200 GB of total block storage across the tenancy; the waker uses 47 GB, so 150 GB uses the envelope to the fullest with a small safety margin (theoretical max: 153 GB)."
+  description = "Boot volume (GB) for the A1 worker. Always Free includes 200 GB of total block storage across the tenancy; the waker uses 50 GB (API minimum), so 147 GB uses the envelope to the fullest with a small safety margin (theoretical max: 150 GB)."
   type        = number
-  default     = 150
+  default     = 147
 }
 
 variable "availability_domain_index" {

@@ -78,7 +78,7 @@ Copy a ready-made workflow from [`examples/`](examples/). Roll back anytime with
 |---|---|---|
 | A1 compute | 1,488 OCPU-h + 8,928 GB-h / month (always-on 2/12) | **1,500 OCPU-h + 9,000 GB-h** |
 | AMD micros | 1 (waker) | **2** (no hour metering) |
-| Block storage | 47 GB (waker) + 150 GB (A1 boot) = 197 GB | **200 GB total** |
+| Block storage | 50 GB (waker) + 147 GB (A1 boot) = 197 GB | **200 GB total** (boot volume API minimum: 50 GB) |
 | Object storage | state bucket, KBs | **20 GB** + 50k requests/month |
 | Outbound transfer | typical CI: 20-100 GB/month | **10 TB/month** |
 | GitHub side | self-hosted runners: **$0** (public repos always free; private-repo charge postponed — see COST.md) | — |

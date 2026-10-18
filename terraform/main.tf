@@ -217,9 +217,11 @@ resource "oci_core_instance" "a1" {
     boot_volume_vpus_per_gb = 10 # balanced performance, free-tier eligible
   }
 
-  launch_options {
-    is_pv_encryption_in_transit_enabled = true
-  }
+  # NOTE: no launch_options block. The legacy is_pv_encryption_in_transit_enabled
+  # option applies to paravirtualized NICs only, and OCI now rejects
+  # launch_options without an explicit network_type ('If LaunchOptions is
+  # provided, NetworkType must be specified'). Modern images default to VFIO
+  # networking, which is what these instances should use anyway.
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.this.id
@@ -290,13 +292,12 @@ resource "oci_core_instance" "waker" {
   source_details {
     source_type             = "image"
     source_id               = data.oci_core_images.ubuntu_x86[0].images[0]["id"]
-    boot_volume_size_in_gbs = 47 # minimum allowed
+    boot_volume_size_in_gbs = 50 # API minimum (47 is rejected: ">= 50GB")
     boot_volume_vpus_per_gb = 10
   }
 
-  launch_options {
-    is_pv_encryption_in_transit_enabled = true
-  }
+  # NOTE: no launch_options - see the a1 resource above (OCI requires
+  # network_type when launch_options is present; defaults are correct).
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.this.id

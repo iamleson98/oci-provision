@@ -22,7 +22,7 @@ ssh_public_key_path = "~/.ssh/id_ed25519.pub"
 
 # --- instances -------------------------------------------------------------------
 runner_profile      = "always-on"      # always-on (2 OCPU/12 GB, 24/7) | burst (4/24, wake on demand)
-a1_boot_volume_gb   = 150              # 47 (waker) + 150 = 197 of the 200 GB free envelope (max: 153)
+a1_boot_volume_gb   = 147              # 50 (waker) + 147 = 197 of the 200 GB free envelope (max: 150)
 availability_domain_index = 0          # bump if 'Out of capacity'
 
 admin_cidr     = "0.0.0.0/0"           # ideally your own IP, e.g. "203.0.113.5/32"
