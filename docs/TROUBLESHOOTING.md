@@ -7,24 +7,52 @@ Symptom-first guide. When in doubt: `make doctor` (or run
 
 ### "Out of host capacity" when creating the A1 instance
 
-Ubiquitous for Always Free A1. In order of effectiveness:
+Ubiquitous for Always Free A1. **What it means** (official FAQ wording): a
+temporary lack of Always Free shapes **in your home region** — not a bug, not
+your quota. Research-backed notes:
 
-1. **Retry** — capacity frees up constantly; `scripts/capacity_hunter.sh`
-   automates this (Cloud Shell has the OCI CLI ready):
+* **No OCI API can pre-check physical host capacity.** Shape support
+  (`oci compute shape list`) and tenancy quota (Limits API) are checkable —
+  the Provision/Plan workflows now run both as a "capacity pre-check" and
+  abort early when *those* fail (retrying cannot fix a missing shape or a
+  zero quota). Green pre-check + failed launch = the hosts themselves are
+  dry, and only the options below help.
+* **Single-AD regions (e.g. ap-singapore-1) have no AD rotation.** Community
+  reports show Singapore can stay dry for weeks (one user retried every
+  5 minutes for a month without landing). Plan accordingly.
+
+In order of effectiveness:
+
+1. **Off-peak scheduled hunting (automated, free)** — create the repo
+   variable `OFF_PEAK_PROVISION=true` (Settings → Secrets and variables →
+   Actions → Variables). The Provision workflow then runs itself daily at
+   **04:00 local region time** (the lowest-demand window, when capacity
+   releases are most likely) with bounded retries. It is idempotent: once
+   the stack lands, later runs become no-ops and skip the deploy job.
+   Delete the variable (or set `false`) once provisioned.
+2. **Retry now, bounded** — re-run Provision with a higher `capacity_retries`
+   input. Capacity frees up constantly; `scripts/capacity_hunter.sh` also
+   automates this from Cloud Shell:
    ```bash
    make hunt COMPARTMENT=ocid1.compartment.oc1..xxxx
    ```
-2. **Try another availability domain** — `availability_domain_index = 1` or `2`
-   in `terraform.tfvars`.
-3. **Try another region** — home region can't change later, but a new
-   account in a quieter region has far better odds. Also see
-   `scripts/capacity_hunter.sh --fallbacks "2,12;1,6"` to accept a smaller
-   shape now and resize later.
+3. **Try another availability domain** — `availability_domain_index = 1` or
+   `2` (only in multi-AD regions; check the Inspect workflow's AD report).
 4. **Upgrade to Pay As You Go** — the reliable fix. Capacity priority
-   improves dramatically and Always Free resources stay free. Set a
-   [budget alert](COST.md) first. (Unofficially, PAYG accounts have also
-   been allowed to keep 4 OCPU/24 GB free since the June 2026 change —
-   confirm with support before relying on it.)
+   improves dramatically and Always Free resources stay free (official FAQ:
+   "with a paid account, you'll continue to have access to Always Free
+   resources, and you'll only pay for the standard resources you use"). PAYG
+   is also exempt from idle reclamation. Set a [budget alert](COST.md) first.
+   (Unofficially, PAYG accounts have also been allowed to keep 4 OCPU/24 GB
+   free since the June 2026 change — confirm with support before relying on
+   it.)
+5. **New account in a quieter home region** — last resort (one account per
+   person per Oracle policy; also your current state bucket/secrets would
+   need recreating). Community-reported roomy regions: us-phoenix-1,
+   us-chicago-1, eu-frankfurt-1. Singapore/Tokyo/Sydney are chronically dry.
+
+A cancelled Provision run can leave a stale state lock — the **Unlock state**
+workflow releases it automatically (safe to run anytime).
 
 ### Terraform auth errors (`401 NotAuthorizedOrNotFound`)
 
@@ -220,16 +248,18 @@ both and echo them on failure.
 * `OCI_PRIVATE_KEY` must be the full PEM including BEGIN/END lines, and
   `OCI_FINGERPRINT` must match that key pair.
 
-### Apply fails with `Out of host capacity` (after ~30 min of retries)
+### Apply fails with `Out of host capacity` (after the bounded retries)
 
-1. Re-run **Provision** with `availability_domain_index` = 1, then 2.
-2. Still stuck? The region is genuinely dry — wait a few hours and re-run,
-   or create a new account in a quieter home region, or **upgrade to Pay As
-   You Go** (free resources stay free; capacity priority jumps; PAYG is also
-   exempt from idle reclamation).
-3. Last resort: `scripts/capacity_hunter.sh` in OCI Cloud Shell (creates an
-   instance outside terraform state — `terraform import` it afterwards, see
-   below).
+Apply stops after `capacity_retries` attempts (default 6 — no more hour-long
+grinds; retrying a dry AD rarely lands). See the full decision matrix at the
+top of this file ("Out of host capacity" when creating the A1 instance"):
+enable `OFF_PEAK_PROVISION=true` for automated 04:00-local hunting, rotate AD
+in multi-AD regions, or upgrade to PAYG. The **capacity pre-check** step in
+the Provision/Plan logs also shows exactly which shapes/quota your AD has.
+
+Last resort: `scripts/capacity_hunter.sh` in OCI Cloud Shell (creates an
+instance outside terraform state — the Provision preflight auto-adopts it on
+the next run, or `terraform import` manually).
 
 ### Apply fails with `LimitExceeded` / quota
 

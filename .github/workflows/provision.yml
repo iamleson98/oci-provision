@@ -24,6 +24,15 @@ on:
       max_runners:
         description: "Max runner containers (blank = profile default: 2 always-on / 4 burst)"
         default: ""
+      capacity_retries:
+        description: "Launch attempts when OCI reports 'Out of host capacity' (0 = single try, no retries)"
+        default: "6"
+  schedule:
+    # Off-peak capacity hunt, 04:00 Asia/Singapore (lowest-demand window).
+    # OPT-IN: only runs when repo variable OFF_PEAK_PROVISION=true.
+    # Once the stack is provisioned, runs become idempotent no-ops (apply is
+    # skipped when the plan reports no changes).
+    - cron: "0 20 * * *"
 
 permissions:
   contents: read
@@ -35,12 +44,16 @@ concurrency:
 jobs:
   provision:
     name: terraform plan + apply
+    # manual runs always proceed; the scheduled off-peak hunt requires the
+    # repo variable OFF_PEAK_PROVISION=true (opt-in)
+    if: github.event_name == 'workflow_dispatch' || vars.OFF_PEAK_PROVISION == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 60
     outputs:
       a1_ip: ${{ steps.out.outputs.a1_ip }}
       waker_ip: ${{ steps.out.outputs.waker_ip }}
       a1_id: ${{ steps.out.outputs.a1_id }}
+      deployed: ${{ steps.plan.outputs.changes }}
     env:
       OCI_REGION: ${{ secrets.OCI_REGION }}
       OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
@@ -97,6 +110,21 @@ jobs:
           python3 -m pip install --disable-pip-version-check --quiet oci
           python3 scripts/preflight_check.py --on-untracked adopt
 
+      - name: Capacity pre-check (shapes + quota - fail fast, no blind retries)
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet oci
+          set +e
+          python3 scripts/capacity_check.py
+          RC=$?
+          set -e
+          if [ "$RC" = 1 ] || [ "$RC" = 2 ]; then
+            echo "::error::capacity pre-check failed (shape unsupported or quota exhausted) - retrying cannot fix this, aborting before apply. See step log above."
+            exit "$RC"
+          fi
+          if [ "$RC" != 0 ]; then
+            echo "::warning::capacity pre-check could not reach the OCI API (rc=$RC) - continuing, apply will be the definitive test"
+          fi
+
       - name: Terraform plan
         id: plan
         run: |
@@ -113,22 +141,28 @@ jobs:
             exit "$RC"
           fi
 
-      - name: Terraform apply (auto-retries while OCI reports capacity shortage)
+      - name: Terraform apply (bounded capacity retries - see capacity_retries input)
+        if: ${{ steps.plan.outputs.changes != 'false' }}
+        env:
+          CAPACITY_RETRIES: ${{ inputs.capacity_retries || '6' }}
         run: |
           set +e
-          for attempt in $(seq 1 28); do
+          RETRIES="${CAPACITY_RETRIES:-6}"
+          [ "$RETRIES" -ge 1 ] 2>/dev/null || RETRIES=1
+          for attempt in $(seq 1 "$RETRIES"); do
             OUT=$(terraform -chdir=terraform apply -input=false -auto-approve -no-color 2>&1)
             RC=$?
             echo "$OUT"
             [ $RC -eq 0 ] && exit 0
             if printf '%s' "$OUT" | grep -qiE 'out of (host )?capacity'; then
-              echo "::warning::attempt $attempt hit 'Out of capacity' - retrying in 120s. If this persists: the region/AD is dry (single-AD regions like ap-singapore-1 have no AD rotation) - wait a few hours and re-run, or upgrade to Pay As You Go (free resources stay $0, capacity priority jumps, idle reclamation exempt)."
+              echo "::warning::attempt $attempt/$RETRIES hit 'Out of capacity'. Physical host capacity cannot be pre-checked by any API - hosts in this AD are dry right now. More retries NOW rarely help; the effective options are: (1) set repo variable OFF_PEAK_PROVISION=true to auto-hunt at 04:00 local time, (2) try another AD (multi-AD regions only), (3) upgrade to Pay As You Go - Always Free resources stay $0 and launch priority improves (docs/TROUBLESHOOTING.md#out-of-host-capacity)."
+              [ "$attempt" = "$RETRIES" ] && break
               sleep 120
             else
               exit $RC
             fi
           done
-          echo "::error::gave up after 28 capacity retries (~1 hour). The region is genuinely dry right now - re-run this workflow in a few hours (it is idempotent), or see docs/TROUBLESHOOTING.md for the PAYG option."
+          echo "::error::still 'Out of capacity' after $RETRIES bounded attempts. This is host exhaustion in the AD, not a bug: enable OFF_PEAK_PROVISION=true (auto retry at 04:00 local), or see docs/TROUBLESHOOTING.md#out-of-host-capacity for the decision matrix."
           exit 1
 
       - name: Collect outputs
@@ -156,6 +190,10 @@ jobs:
   deploy-stack:
     name: deploy runner stack over SSH
     needs: provision
+    # skip when the run was an idempotent no-op (infra already in sync) - avoids
+    # nightly redeploys from the off-peak schedule; use the Deploy stack
+    # workflow directly to force a redeploy
+    if: needs.provision.result == 'success' && needs.provision.outputs.deployed != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

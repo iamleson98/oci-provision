@@ -130,6 +130,7 @@ Inputs:
 | `admin_cidr` | `0.0.0.0/0` | Better: `your.ip.add.ress/32` — narrows SSH (and status) exposure. |
 | `repositories` | *(this repo)* | `owner/repo[,owner/repo2]` the runners will serve. You can change this anytime by re-running **Deploy stack** — no reprovision needed. |
 | `max_runners` | *(profile default)* | 2 for always-on, 4 for burst. Lower it if jobs are memory-hungry. |
+| `capacity_retries` | `6` | Launch attempts when OCI reports "Out of host capacity" (bounded — no hour-long grinds). |
 
 What the run does (≈ 10-20 min end to end):
 
@@ -143,22 +144,32 @@ What the run does (≈ 10-20 min end to end):
    - a duplicate project server or an Always Free budget breach (live A1 OCPUs
      + planned > `TF_VAR_overprovision_max_ocpus`, default 4; or a 3rd AMD
      micro) → **the run fails** instead of over-provisioning.
-2. `terraform plan` — visible in the log, sanity check. (A second,
+2. **Capacity pre-check** — `scripts/capacity_check.py` verifies what *can*
+   be verified before launching: both shapes are offered in the target
+   availability domain, and the tenancy quota (A1 cores / memory, micro
+   count) has headroom. A missing shape or exhausted quota aborts the run
+   immediately — retrying cannot fix either. (No OCI API can pre-check
+   physical host capacity; a green pre-check with a failing launch simply
+   means the AD's hosts are dry.)
+3. `terraform plan` — visible in the log, sanity check. (A second,
    terraform-native guard lives here: plan-time preconditions in
    `terraform/main.tf` fail the plan when a duplicate `gh-runner-a1*` /
    `gh-runner-waker*` instance is already live, independent of state.)
-3. `terraform apply` — **retries up to 20 times (~30 min) when OCI reports
-   "Out of host capacity"** (the notorious A1 issue). If it still fails:
-   re-run with a different `availability_domain_index`, or wait a few hours,
-   or (fastest fix) upgrade the OCI account to Pay-As-You-Go — Always Free
-   resources stay free, capacity priority improves dramatically.
-4. Cloud-init hardens and sets up both VMs (docker, ufw, fail2ban, unattended
+4. `terraform apply` — **bounded retries** (`capacity_retries`, default 6)
+   when OCI reports "Out of host capacity" (the notorious A1 issue). If it
+   still fails: set the repo variable `OFF_PEAK_PROVISION=true` and the
+   workflow hunts automatically every day at 04:00 local region time until
+   it lands (idempotent — later runs are no-ops), or (fastest fix) upgrade
+   the OCI account to Pay-As-You-Go — Always Free resources stay free,
+   capacity priority improves dramatically. Full decision matrix:
+   TROUBLESHOOTING.md → "Out of host capacity".
+5. Cloud-init hardens and sets up both VMs (docker, ufw, fail2ban, unattended
    upgrades, qemu for multi-arch builds, swap).
-5. The **deploy-stack** job waits for cloud-init, rsyncs this repo to
+6. The **deploy-stack** job waits for cloud-init, rsyncs this repo to
    `/opt/oci-runner`, writes the controller `.env` (PAT, repos, pool sizing
    from your profile), builds the runner image, and starts everything; then
    the same for the waker with `ALWAYS_RESUME=true` (self-healing).
-6. The summary shows the VM IPs.
+7. The summary shows the VM IPs.
 
 **Over-provision guard fired — what now?** The preflight deliberately fails
 instead of creating a second server. Pick one:

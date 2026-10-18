@@ -86,6 +86,11 @@ jobs:
           python3 -m pip install --disable-pip-version-check --quiet oci
           python3 scripts/preflight_check.py --on-untracked report
 
+      - name: Capacity pre-check (shapes + quota - report only)
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet oci
+          python3 scripts/capacity_check.py || echo "::warning::capacity pre-check reported an issue (see log above) - plan still shown below"
+
       - name: Terraform plan
         run: terraform -chdir=terraform plan -input=false -no-color
 
