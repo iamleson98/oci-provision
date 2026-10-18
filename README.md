@@ -85,6 +85,48 @@ Copy a ready-made workflow from [`examples/`](examples/). Roll back anytime with
 
 Do **not** raise A1 OCPUs above 2 on a free-tier-only account (Oracle stops oversized instances since June 15, 2026). Use the `burst` profile for more muscle instead.
 
+## Runner mode: why ephemeral Docker containers (not host-installed)
+
+The runner stack deliberately runs each job in a **fresh, throwaway container**
+(`--ephemeral` runners: register → serve exactly one job → container `rm -v`),
+rather than installing a persistent runner service directly on the host. This
+was a deliberate choice over host-mode:
+
+* **Clean by construction** — every job gets a pristine workspace and runner
+  binary state; after the job the container and its anonymous volumes are
+  removed (`rm -v`), the controller prunes, and a weekly cron deep-cleans
+  (`docker system prune --filter "until=168h"`). Nothing accumulates between
+  jobs.
+* **Fork/PR safety posture** — a container that only lives for one job limits
+  what any single malicious job can persist on the host (caveat: containers
+  here are a *freshness* control, not a hard security boundary — see below).
+* **Auto-scaling** — the controller spawns one runner per queued job and
+  reaps it after, clamped to free-tier-safe limits.
+
+Host-mode (`systemd` runner service on the VM) is a valid lighter-weight setup
+for trusted-only workloads, but it needs hand-rolled workspace cleanup,
+per-job reregistration loops, and systemd resource caps to reach the same
+hygiene. For this repo's goals (fork-safe, always-clean, $0) the container
+approach is the better default.
+
+### Making runners serve ONLY your repos (and never fork PRs)
+
+1. **Repo allow-list is built in** — the controller only registers runners for
+   the repos listed in `GITHUB_REPOSITORIES` (set by the Provision/Deploy
+   workflows). No other repo can pick up the `oracle-a1` label.
+2. **For your repos: require approval for fork PRs** (recommended) — repo →
+   Settings → Actions → General → *Fork pull request workflows from outside
+   collaborators* → **Require approval for all outside collaborators**. This
+   makes fork-opened PRs wait for your click before any workflow (and thus any
+   self-hosted job) runs.
+3. **Never use `pull_request_target` with secrets** in a repo served by
+   self-hosted runners — it runs workflow code from the PR *fork* with your
+   base-repo secrets. The `pull_request` trigger (what `examples/` uses) runs
+   the *base* repo's workflow file and is the safe default.
+4. Optional hardening: keep `admin_cidr` tight, set `MOUNT_DOCKER_SOCK=false`
+   if your jobs don't build images, and run the **Doctor** workflow weekly
+   (it also prunes).
+
 ## Repo layout
 
 ```

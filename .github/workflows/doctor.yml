@@ -42,12 +42,12 @@ jobs:
         run: |
           miss=0
           check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
-          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
-          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
-          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
-          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
-          check OCI_REGION "${{ secrets.OCI_REGION }}"
-          check OCI_NAMESPACE "${{ secrets.OCI_NAMESPACE }}"
+          check OCI_TENANCY_OCID "$OCI_TENANCY_OCID"
+          check OCI_USER_OCID "$OCI_USER_OCID"
+          check OCI_FINGERPRINT "$OCI_FINGERPRINT"
+          check OCI_PRIVATE_KEY "$OCI_PRIVATE_KEY"
+          check OCI_REGION "$OCI_REGION"
+          check OCI_NAMESPACE "$OCI_NAMESPACE"
           [ "$miss" = 0 ] || exit 1
 
       - name: Terraform init (state - IPs + generated SSH key)
