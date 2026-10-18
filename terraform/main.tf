@@ -103,11 +103,12 @@ locals {
   # Total live Ampere A1 capacity in the compartment, ours + foreign. This is
   # what the tenancy is really billed metered on - the Always Free envelope is
   # 4 OCPU / 24 GB post-June-2026 (free-only accounts get stopped above 2).
-  live_a1_ocpus = sum([
+  # concat([0], ...) keeps sum() valid when the list is empty (fresh tenancy).
+  live_a1_ocpus = sum(concat([0], [
     for inst in local.live_instances : (
       inst.shape == "VM.Standard.A1.Flex" ? try(inst.shape_config.ocpus, 0) : 0
     )
-  ])
+  ]))
 
   # OCPUs terraform would ADD when no project A1 worker is currently live.
   planned_a1_ocpus = length(local.live_project_a1) == 0 ? local.a1_ocpus : 0
