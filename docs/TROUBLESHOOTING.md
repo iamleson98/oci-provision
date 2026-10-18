@@ -199,6 +199,19 @@ Add the named repo secret (Settings → Secrets and variables → Actions).
 The table in CI_DEPLOYMENT.md §2 lists all of them and where each value
 comes from.
 
+### Bootstrap fails with exit code 2 and no visible error
+
+The original Bootstrap swallowed `oci` CLI output with `>/dev/null`, and
+`oci os bucket create` uses **`--name`** (not `--bucket-name`) — the resulting
+usage error goes to *stdout* (so the redirect hid it) and exits with code 2,
+producing a silent red ❌. Bootstrap now captures and prints all `oci` output
+on failure. If you see this on an old revision, update to the current
+`main` and re-run — it is idempotent.
+
+General rule kept in all workflows: never redirect `oci` command output to
+`/dev/null` — usage errors print to stdout, service errors to stderr; capture
+both and echo them on failure.
+
 ### `terraform init` fails (404/403 on the state bucket)
 
 * `OCI_NAMESPACE` must match exactly what the **Bootstrap** summary printed.

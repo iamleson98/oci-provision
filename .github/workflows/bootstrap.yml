@@ -33,11 +33,11 @@ jobs:
         run: |
           miss=0
           check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
-          check OCI_TENANCY_OCID "${{ secrets.OCI_TENANCY_OCID }}"
-          check OCI_USER_OCID "${{ secrets.OCI_USER_OCID }}"
-          check OCI_FINGERPRINT "${{ secrets.OCI_FINGERPRINT }}"
-          check OCI_PRIVATE_KEY "${{ secrets.OCI_PRIVATE_KEY }}"
-          check OCI_REGION "${{ secrets.OCI_REGION }}"
+          check OCI_TENANCY_OCID "$OCI_CLI_TENANCY"
+          check OCI_USER_OCID "$OCI_CLI_USER"
+          check OCI_FINGERPRINT "$OCI_CLI_FINGERPRINT"
+          check OCI_PRIVATE_KEY "$OCI_CLI_KEY_CONTENT"
+          check OCI_REGION "$OCI_CLI_REGION"
           [ "$miss" = 0 ] || exit 1
 
       - name: Install OCI CLI
@@ -48,20 +48,74 @@ jobs:
       - name: Create versioned state bucket + read namespace
         run: |
           set -euo pipefail
-          NS="$(oci os ns get --query data --raw-output)"
+
+          # NOTE on error handling: oci-cli prints USAGE errors to stdout and
+          # SERVICE errors to stderr, so every call below captures BOTH streams
+          # and prints them on failure. Never redirect oci output to /dev/null.
+
+          # 1. Read the object-storage namespace (also validates the OCI_* secrets end-to-end)
+          if ! NS="$(oci os ns get --query data --raw-output 2>&1)"; then
+            echo "::error title=OCI authentication failed::oci os ns get failed - check OCI_TENANCY_OCID / OCI_USER_OCID / OCI_FINGERPRINT / OCI_PRIVATE_KEY / OCI_REGION repo secrets"
+            printf '%s\n' "$NS" | sed 's/^/    /'
+            exit 1
+          fi
           echo "OCI_NAMESPACE=$NS" >> "$GITHUB_ENV"
-          if oci os bucket get --bucket-name "$TF_STATE_BUCKET" >/dev/null 2>&1; then
+          echo "namespace: $NS"
+
+          # 2. Ensure the state bucket exists (idempotent - safe to re-run)
+          if OUT="$(oci os bucket get --bucket-name "$TF_STATE_BUCKET" 2>&1)"; then
             echo "bucket '$TF_STATE_BUCKET' already exists"
             if [ "${{ inputs.enable_versioning }}" = "true" ]; then
-              oci os bucket update --bucket-name "$TF_STATE_BUCKET" --versioning Enabled >/dev/null \
-                && echo "versioning enabled" || echo "::warning::could not enable versioning - do it in the console"
+              if OUT="$(oci os bucket update --bucket-name "$TF_STATE_BUCKET" --versioning Enabled 2>&1)"; then
+                echo "versioning enabled"
+              else
+                echo "::warning::could not enable versioning - do it in the console"
+                printf '%s\n' "$OUT" | sed 's/^/    /'
+              fi
             fi
           else
-            oci os bucket create --bucket-name "$TF_STATE_BUCKET" \
-              --compartment-id "$OCI_CLI_TENANCY" --versioning Enabled >/dev/null \
-              && echo "bucket '$TF_STATE_BUCKET' created (versioning on)" \
-              || { oci os bucket create --bucket-name "$TF_STATE_BUCKET" --compartment-id "$OCI_CLI_TENANCY" >/dev/null \
-                   && echo "bucket created (versioning could not be set at create time)"; }
+            echo "bucket '$TF_STATE_BUCKET' not found - creating it"
+            # NOTE: `oci os bucket create` takes --name (there is no --bucket-name option)
+            if OUT="$(oci os bucket create --name "$TF_STATE_BUCKET" \
+                       --compartment-id "$OCI_CLI_TENANCY" --versioning Enabled 2>&1)"; then
+              echo "bucket '$TF_STATE_BUCKET' created (versioning on)"
+            elif OUT="$(oci os bucket create --name "$TF_STATE_BUCKET" \
+                         --compartment-id "$OCI_CLI_TENANCY" 2>&1)"; then
+              echo "bucket '$TF_STATE_BUCKET' created (versioning could not be set at create time)"
+              echo "::warning::enable versioning on '$TF_STATE_BUCKET' in the console (protects state history)"
+            else
+              echo "::error title=bucket create failed::see output below"
+              printf '%s\n' "$OUT" | sed 's/^/    /'
+              exit 1
+            fi
+          fi
+
+          # 3. Verify the bucket + versioning state
+          VS="$(oci os bucket get --bucket-name "$TF_STATE_BUCKET" \
+                --query 'data."versioning"' --raw-output 2>/dev/null || true)"
+          if [ -n "$VS" ]; then
+            echo "bucket versioning status: $VS"
+          else
+            echo "::warning::could not read versioning status of '$TF_STATE_BUCKET'"
+            VS="unknown"
+          fi
+          echo "BUCKET_VERSIONING=$VS" >> "$GITHUB_ENV"
+
+      - name: Save OCI_NAMESPACE as repo secret (best effort)
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_GITHUB_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::RUNNER_GITHUB_PAT secret not set - add repo secret OCI_NAMESPACE manually (value: ${OCI_NAMESPACE})"
+            echo "NAMESPACE_SECRET_SET=manual" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if gh secret set OCI_NAMESPACE --body "$OCI_NAMESPACE" --repo "$GITHUB_REPOSITORY"; then
+            echo "repo secret OCI_NAMESPACE saved automatically"
+            echo "NAMESPACE_SECRET_SET=auto" >> "$GITHUB_ENV"
+          else
+            echo "::warning::could not save OCI_NAMESPACE secret automatically - add it manually (value: ${OCI_NAMESPACE})"
+            echo "NAMESPACE_SECRET_SET=manual" >> "$GITHUB_ENV"
           fi
 
       - name: Summary
@@ -69,7 +123,8 @@ jobs:
           {
             echo "## Bootstrap done"
             echo ""
-            echo "1. Add repo secret \`OCI_NAMESPACE\` = \`${OCI_NAMESPACE}\`"
-            echo "2. State bucket \`${TF_STATE_BUCKET}\` in \`${OCI_CLI_REGION}\` (versioning enabled - protects state history)"
-            echo "3. Next: run the **Provision** workflow"
+            echo "- Namespace: \`${OCI_NAMESPACE}\`"
+            echo "- Repo secret \`OCI_NAMESPACE\`: ${NAMESPACE_SECRET_SET:-manual} (value: \`${OCI_NAMESPACE}\`)"
+            echo "- State bucket \`${TF_STATE_BUCKET}\` in \`${OCI_CLI_REGION}\` (versioning: ${BUCKET_VERSIONING:-unknown})"
+            echo "- Next: run the **Provision** workflow"
           } >> "$GITHUB_STEP_SUMMARY"

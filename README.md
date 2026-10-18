@@ -57,7 +57,7 @@ Runner *containers* are equally protected at runtime: the controller clamps `des
 Full detail in **[docs/CI_DEPLOYMENT.md](docs/CI_DEPLOYMENT.md)** — the short version:
 
 1. **Add secrets** (repo → Settings → Secrets and variables → Actions): `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_PRIVATE_KEY` (API signing key — created in the OCI console under your profile), `OCI_REGION`, and `RUNNER_GITHUB_PAT` (a classic PAT with `repo` scope).
-2. Run the **Bootstrap** workflow once → it prints your storage namespace → add it as secret `OCI_NAMESPACE`.
+2. Run the **Bootstrap** workflow once → it creates the versioned state bucket and auto-saves secret `OCI_NAMESPACE` (using `RUNNER_GITHUB_PAT`; falls back to printing the value for manual entry).
 3. Run the **Provision** workflow (default inputs are fine) → ~15 min later the summary shows your VM IPs and the runner stack is live.
 4. In the repo you want CI'd, use:
 

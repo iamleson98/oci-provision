@@ -77,7 +77,7 @@ Now add the secrets:
 | `OCI_PRIVATE_KEY` | The **entire contents** of the downloaded `oci_api_key.pem`, including the `-----BEGIN ... -----` lines. Multi-line paste is fine; literal `\n` escapes are also handled. | ✅ |
 | `OCI_REGION` | Your home region, e.g. `us-ashburn-1` | ✅ |
 | `RUNNER_GITHUB_PAT` | A **classic PAT with `repo` scope** (GitHub → Settings → Developer settings → Tokens). Used by the controller on the VM to register runners and read job queues. Fine-grained PATs also work: "Administration: Read & write", "Actions: Read", "Metadata: Read" on the target repos. | ✅ |
-| `OCI_NAMESPACE` | **Added after Step 3** (Bootstrap prints it) | ✅ later |
+| `OCI_NAMESPACE` | **Auto-saved by Bootstrap** (needs `RUNNER_GITHUB_PAT`; otherwise Bootstrap prints the value for manual entry) | ✅ later |
 | `OCI_COMPARTMENT` | Compartment OCID if you don't want the tenancy root. Leave out otherwise. | optional |
 | `SSH_PUBLIC_KEY` / `SSH_PRIVATE_KEY` | Provide your own keypair instead of the terraform-generated one (`ssh-ed25519 AAAA...` content / the private key file contents). | optional |
 | `WAKER_STATUS_TOKEN` | Shared secret for the waker status page (only relevant with `status_public=true` in terraform). | optional |
@@ -106,10 +106,13 @@ It will:
 2. Create bucket **`oci-provision-tfstate`** in your tenancy root compartment,
    with **versioning enabled** (state history recoverable).
 3. Print your Object Storage **namespace** in the job summary.
+4. **Auto-save `OCI_NAMESPACE` as a repo secret** if `RUNNER_GITHUB_PAT` is set
+   (it usually is — you added it in §2). If that PAT lacks permission, the run
+   shows a warning with the namespace value so you can add the secret manually.
 
-Then: add that namespace as the secret **`OCI_NAMESPACE`** (exact string from
-the summary). Done — never run Bootstrap again (safe to re-run idempotently,
-e.g. to fix versioning).
+Done — never run Bootstrap again (safe to re-run idempotently, e.g. to fix
+versioning). If `OCI_NAMESPACE` was not auto-saved, add it manually using the
+exact string from the summary.
 
 ---
 
