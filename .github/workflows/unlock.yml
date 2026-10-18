@@ -62,50 +62,86 @@ jobs:
       - name: Terraform init (state in OCI Object Storage)
         run: bash scripts/tf_init.sh
 
-      - name: Detect lock ID (reads the .lock object content)
+      - name: Read the lock object (auto-detect ID)
         id: lock
         run: |
           set -euo pipefail
           LOCK_OBJ="${TF_STATE_KEY:-oci-provision.tfstate}.lock"
+
           if [ -n "${{ inputs.lock_id }}" ]; then
             echo "id=${{ inputs.lock_id }}" >> "$GITHUB_OUTPUT"
             echo "using lock_id input: ${{ inputs.lock_id }}"
             exit 0
           fi
-          if ! oci os object get --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ" --file lock.json 2>/tmp/lock_err; then
-            echo "id=" >> "$GITHUB_OUTPUT"
-            echo "no lock object '$LOCK_OBJ' found (nothing to unlock):"
-            head -3 /tmp/lock_err || true
+
+          # NOTE: read with --file - (stdout). Reading to a file path has been
+          # observed to fail spuriously on this bucket; stdout capture works.
+          LOCK_JSON="$(oci os object get --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ" --file - 2>/tmp/lock_err || true)"
+          if [ -n "$LOCK_JSON" ]; then
+            echo "--- current lock object content ---"
+            printf '%s\n' "$LOCK_JSON"
+            LOCK_ID="$(printf '%s' "$LOCK_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("ID",""))' 2>/dev/null || true)"
+            echo "id=$LOCK_ID" >> "$GITHUB_OUTPUT"
+            echo "detected lock ID: $LOCK_ID"
             exit 0
           fi
-          echo "--- current lock object content ---"
-          cat lock.json
-          LOCK_ID="$(python3 -c "import json;print(json.load(open('lock.json')).get('ID',''))")"
-          echo "id=$LOCK_ID" >> "$GITHUB_OUTPUT"
-          echo "detected lock ID: $LOCK_ID"
+
+          # Read failed - determine authoritatively whether the object exists
+          echo "--- object get failed (full stderr) ---"
+          head -30 /tmp/lock_err || true
+          N="$(oci os object list --bucket-name "$TF_STATE_BUCKET" --prefix "$LOCK_OBJ" --query 'length(data)' --raw-output 2>/dev/null || echo 0)"
+          if [ "$N" = "1" ]; then
+            echo "::warning::lock object EXISTS (per object list) but its content could not be read. Pass lock_id as workflow input to force release, or re-run - a live apply re-acquires its own lock so this is safe when no terraform is running."
+            exit 3
+          fi
+          echo "id=" >> "$GITHUB_OUTPUT"
+          echo "no lock object '$LOCK_OBJ' found (nothing to unlock)"
 
       - name: Terraform force-unlock
         if: ${{ steps.lock.outputs.id != '' }}
         run: |
-          set -euo pipefail
+          set +e
           terraform -chdir=terraform force-unlock -force "${{ steps.lock.outputs.id }}"
+          RC=$?
+          set -e
+          if [ $RC -eq 0 ]; then
+            echo "force-unlock succeeded"
+            exit 0
+          fi
+          echo "::warning::terraform force-unlock failed (the Go SDK GET can 404 on an object the CLI reads fine). Falling back to direct lock object delete - equivalent to what force-unlock does internally."
+          exit 0   # handled by the fallback step
 
-      - name: Verify lock released
+      - name: Fallback - delete the lock object directly
         if: ${{ steps.lock.outputs.id != '' }}
         run: |
           set -euo pipefail
           LOCK_OBJ="${TF_STATE_KEY:-oci-provision.tfstate}.lock"
-          if oci os object get --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ" --file /dev/null 2>/dev/null; then
-            echo "::warning::lock object still present - it may have been re-acquired by a running apply, or force-unlock did not remove it. Inspect: oci os object get --bucket-name $TF_STATE_BUCKET --name $LOCK_OBJ --file -"
+          # delete the specific lock object (adds a delete marker on the
+          # versioned bucket; the lock becomes invisible and PUTs succeed)
+          if oci os object delete --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ"; then
+            echo "lock object deleted directly"
+          else
+            echo "::warning::direct delete failed - check the step log"
+          fi
+
+      - name: Verify lock released (authoritative object list)
+        if: ${{ steps.lock.outputs.id != '' }}
+        run: |
+          set -euo pipefail
+          LOCK_OBJ="${TF_STATE_KEY:-oci-provision.tfstate}.lock"
+          N="$(oci os object list --bucket-name "$TF_STATE_BUCKET" --prefix "$LOCK_OBJ" --query 'length(data)' --raw-output 2>/dev/null || echo 0)"
+          if [ "$N" = "0" ]; then
+            echo "lock object gone - state is writable again"
+          else
+            echo "::error::lock object still listed - inspect with the forensics workflow (oci os object list-object-versions)"
             exit 1
           fi
-          echo "lock object gone - state is writable again"
 
       - name: Summary
         run: |
           {
-            echo "## State lock released"
+            echo "## State lock release"
             echo ""
             echo "- Lock ID: \`${{ steps.lock.outputs.id }}\`"
-            echo "- Stale locks happen when a run is cancelled mid-apply; this workflow is safe to re-run anytime."
+            echo "- Stale locks happen when a run is cancelled mid-apply; safe to re-run anytime."
           } >> "$GITHUB_STEP_SUMMARY"

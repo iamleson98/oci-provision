@@ -293,7 +293,7 @@ class TerraformState:
 
     def state_list(self) -> list[str]:
         if self._addresses is None:
-            rc, out = _run_tf(self.tf_dir, "state", "list", "-lock=false")
+            rc, out = _run_tf(self.tf_dir, "state", "list")
             self._addresses = [
                 line.strip() for line in out.splitlines()
                 if line.strip() and not line.startswith("No state")
@@ -302,7 +302,7 @@ class TerraformState:
 
     def show_json(self) -> dict:
         if self._show is None:
-            rc, out = _run_tf(self.tf_dir, "show", "-json", "-lock=false")
+            rc, out = _run_tf(self.tf_dir, "show", "-json")
             if rc != 0 or not out.strip():
                 self._show = {}
             else:
