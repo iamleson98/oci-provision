@@ -167,14 +167,35 @@ def main() -> int:
             return None
 
     checks = []  # (label, limit_name candidates, needed, unit)
+    # Candidate ordering matters: canonical tenancy-wide limit names first,
+    # prefixed variants (dvh- = dedicated virtual hosts, dense-, bm-, ...) last
+    # - they are DIFFERENT limits that just contain 'a1'/'micro' in the name.
     a1_defs = [d.name for d in defs if "a1" in d.name.lower()]
-    mem_candidates = [n for n in a1_defs if "memory" in n.lower()] or \
-        ["standard-a1-memory-in-gbs"]
-    core_candidates = [n for n in a1_defs if "core" in n.lower()] or \
-        ["standard-a1-core-count"]
-    micro_candidates = [n for n in (d.name for d in defs)
-                        if "micro" in n.lower() and "e21" in n.lower()] or \
-        ["standard-e21micro-count"]
+    micro_defs = [d.name for d in defs if "micro" in d.name.lower()]
+
+    def _rank(names, canonical):
+        # canonical exact names first, then discovered ones that share the
+        # canonical 'standard-' prefix. Prefixed variants (dvh- = dedicated
+        # virtual hosts, dense-, bm-, ...) measure DIFFERENT limits and are
+        # dropped entirely - e.g. dvh-standard-a1-core-count is the dedicated-
+        # host A1 limit, not the tenancy A1 limit.
+        ranked = [n for n in canonical]
+        for n in names:
+            if n in ranked:
+                continue
+            if n.startswith(("standard-", "std-")):
+                ranked.append(n)
+        return ranked
+
+    mem_candidates = _rank(
+        [n for n in a1_defs if "memory" in n.lower()],
+        ["standard-a1-memory-in-gbs"])
+    core_candidates = _rank(
+        [n for n in a1_defs if "core" in n.lower()],
+        ["standard-a1-core-count"])
+    micro_candidates = _rank(
+        [n for n in micro_defs if "e21" in n.lower() or "e2" in n.lower()],
+        ["standard-e21micro-count"])
     checks.append(("A1 OCPUs", core_candidates, a1_ocpus_needed, "OCPU"))
     checks.append(("A1 memory", mem_candidates, a1_mem_needed, "GB"))
     checks.append(("AMD micros", micro_candidates, micro_needed, "instance(s)"))
