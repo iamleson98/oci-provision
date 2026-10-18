@@ -1,0 +1,58 @@
+name: State bucket forensics (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  forensics:
+    name: dump lock object version history
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_CLI_AUTH: api_key
+      TF_STATE_BUCKET: oci-provision-tfstate
+    steps:
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set"; miss=1; }; }
+          check OCI_TENANCY_OCID "$OCI_CLI_TENANCY"
+          check OCI_USER_OCID "$OCI_CLI_USER"
+          check OCI_FINGERPRINT "$OCI_CLI_FINGERPRINT"
+          check OCI_PRIVATE_KEY "$OCI_CLI_KEY_CONTENT"
+          check OCI_REGION "$OCI_CLI_REGION"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Install OCI CLI
+        run: |
+          python3 -m pip install --user --quiet oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Dump current objects + full version history of state/lock
+        run: |
+          set -euo pipefail
+          echo "### Current objects (live, no delete markers):"
+          oci os object list --bucket-name "$TF_STATE_BUCKET" --all \
+            --query 'data[*].{name:name,size:"size"}' --raw-output 2>&1
+          echo
+          echo "### FULL version history (all versions + delete markers, newest first):"
+          oci os object-version list --bucket-name "$TF_STATE_BUCKET" --all \
+            --query 'data[*].{name:name,versionId:"version-id",timeCreated:"time-created",isDeleteMarker:"is-delete-marker",size:"size"}' --raw-output 2>&1 | head -60
+          echo
+          echo "### Lock object current content (if live):"
+          oci os object get --bucket-name "$TF_STATE_BUCKET" --name oci-provision.tfstate.lock --file - 2>&1 || true
+          echo
+          echo "### State object head (metadata):"
+          oci os object head --bucket-name "$TF_STATE_BUCKET" --name oci-provision.tfstate 2>&1 | head -20 || true
