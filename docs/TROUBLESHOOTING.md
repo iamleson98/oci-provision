@@ -247,8 +247,17 @@ both and echo them on failure.
 ### `terraform init` fails (404/403 on the state bucket)
 
 * `OCI_NAMESPACE` must match exactly what the **Bootstrap** summary printed.
-* The bucket `oci-provision-tfstate` must exist — re-run **Bootstrap**
+* The bucket `oci-provision-tfstate2` must exist — re-run **Bootstrap**
   (idempotent).
+* **Deleted-bucket name reservation:** if a bucket was deleted (e.g. while
+  cleaning up), OCI keeps the name reserved for a while — `bucket get`
+  returns 404 *and* `bucket create` returns 409 `BucketAlreadyExists` at the
+  same time. That exact combination is the tombstone, not an inconsistency:
+  either wait (minutes to hours) or move to a fresh bucket name (set it in
+  `bootstrap.yml` **and** `scripts/tf_init.sh`). This is why the repo moved
+  from `oci-provision-tfstate` to `oci-provision-tfstate2`. Losing the state
+  file is not fatal: the next Provision run's preflight auto-adopts the live
+  resources via `terraform import`.
 * `OCI_PRIVATE_KEY` must be the full PEM including BEGIN/END lines, and
   `OCI_FINGERPRINT` must match that key pair.
 

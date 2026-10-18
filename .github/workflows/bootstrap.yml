@@ -27,7 +27,7 @@ jobs:
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
       OCI_CLI_AUTH: api_key
-      TF_STATE_BUCKET: oci-provision-tfstate
+      TF_STATE_BUCKET: oci-provision-tfstate2
     steps:
       - name: Preflight - required secrets
         run: |
@@ -86,6 +86,9 @@ jobs:
             else
               echo "::error title=bucket create failed::see output below"
               printf '%s\n' "$OUT" | sed 's/^/    /'
+              if printf '%s' "$OUT" | grep -q 'BucketAlreadyExists'; then
+                echo "::error title=Bucket name reserved::a bucket named '$TF_STATE_BUCKET' was deleted earlier - OCI keeps deleted bucket names reserved for a while (get returns 404 while create returns 409). Either wait and re-run, or pick a fresh TF_STATE_BUCKET name here AND in scripts/tf_init.sh."
+              fi
               exit 1
             fi
           fi

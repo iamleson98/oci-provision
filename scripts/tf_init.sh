@@ -10,7 +10,7 @@
 #   OCI_PRIVATE_KEY      PEM content (literal \n escapes are fine) - or -
 #   OCI_PRIVATE_KEY_FILE path to the PEM file
 # Optional env:
-#   TF_STATE_BUCKET  default: oci-provision-tfstate
+#   TF_STATE_BUCKET  default: oci-provision-tfstate2
 #   TF_STATE_KEY     default: oci-provision.tfstate
 set -euo pipefail
 
@@ -30,7 +30,7 @@ fi
 cd "$(dirname "$0")/../terraform"
 
 terraform init -input=false -no-color \
-  -backend-config="bucket=${TF_STATE_BUCKET:-oci-provision-tfstate}" \
+  -backend-config="bucket=${TF_STATE_BUCKET:-oci-provision-tfstate2}" \
   -backend-config="key=${TF_STATE_KEY:-oci-provision.tfstate}" \
   -backend-config="namespace=${OCI_NAMESPACE}" \
   -backend-config="region=${OCI_REGION}" \

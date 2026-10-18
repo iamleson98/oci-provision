@@ -15,7 +15,7 @@ checks and rollback are all workflow runs.
 ┌──────────────────────────── GitHub ────────────────────────────┐
 │  Secrets: OCI API key, PAT, namespace                          │
 │                                                                │
-│  Bootstrap ──► creates versioned bucket oci-provision-tfstate  │
+│  Bootstrap ──► creates versioned bucket oci-provision-tfstate2 │
 │  Provision ──► terraform init (state+lock in bucket)           │
 │                terraform apply  ──► OCI: VCN, A1, waker, IAM   │
 │                deploy-stack job ──► SSH/rsync to the VMs       │
@@ -103,7 +103,7 @@ It will:
 
 1. Verify the five OCI secrets work (fails loudly with a red ❌ annotation if
    any is missing/wrong).
-2. Create bucket **`oci-provision-tfstate`** in your tenancy root compartment,
+2. Create bucket **`oci-provision-tfstate2`** in your tenancy root compartment,
    with **versioning enabled** (state history recoverable).
 3. Print your Object Storage **namespace** in the job summary.
 4. **Auto-save `OCI_NAMESPACE` as a repo secret** if `RUNNER_GITHUB_PAT` is set

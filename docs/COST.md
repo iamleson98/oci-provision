@@ -42,7 +42,7 @@ A1 experiment, use the burst profile or drop to 1 OCPU / 6 GB
 | A1 GB-h / month | 8,928 | 9,000 | ~0.8% |
 | AMD micro (waker) | 1 VM × 1/8 OCPU, 1 GB | 2 VMs, **no hour limit** | 1 micro spare |
 | Block storage | 147 GB (A1 boot) + 50 GB (waker) | 200 GB total | ~3 GB (theoretical max: 150 GB A1 boot; API minimum boot volume is 50 GB) |
-| Object storage (state) | bucket `oci-provision-tfstate`, KBs + version history | 20 GB + 50,000 API requests/month | ~100% |
+| Object storage (state) | bucket `oci-provision-tfstate2`, KBs + version history | 20 GB + 50,000 API requests/month | ~100% |
 | Outbound transfer | typical CI: 20-100 GB/month | 10 TB / month | ~99% |
 | Volume backups | 0 | 5 | — |
 
