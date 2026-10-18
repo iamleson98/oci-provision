@@ -1,0 +1,111 @@
+name: Unlock state (maintenance)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lock_id:
+        description: "Lock ID to release (leave blank = auto-detect from the state lock object)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  unlock:
+    name: release stale terraform state lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_CLI_AUTH: api_key
+      OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      TF_STATE_BUCKET: oci-provision-tfstate
+      TF_STATE_KEY: oci-provision-tfstate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.16.0"
+          terraform_wrapper: false
+
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "$OCI_TENANCY_OCID"
+          check OCI_USER_OCID "$OCI_USER_OCID"
+          check OCI_FINGERPRINT "$OCI_FINGERPRINT"
+          check OCI_PRIVATE_KEY "$OCI_PRIVATE_KEY"
+          check OCI_REGION "$OCI_REGION"
+          check OCI_NAMESPACE "$OCI_NAMESPACE"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Install OCI CLI
+        run: |
+          python3 -m pip install --user --quiet oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Terraform init (state in OCI Object Storage)
+        run: bash scripts/tf_init.sh
+
+      - name: Detect lock ID (reads the .lock object content)
+        id: lock
+        run: |
+          set -euo pipefail
+          LOCK_OBJ="${TF_STATE_KEY:-oci-provision.tfstate}.lock"
+          if [ -n "${{ inputs.lock_id }}" ]; then
+            echo "id=${{ inputs.lock_id }}" >> "$GITHUB_OUTPUT"
+            echo "using lock_id input: ${{ inputs.lock_id }}"
+            exit 0
+          fi
+          if ! oci os object get --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ" --file lock.json 2>/tmp/lock_err; then
+            echo "id=" >> "$GITHUB_OUTPUT"
+            echo "no lock object '$LOCK_OBJ' found (nothing to unlock):"
+            head -3 /tmp/lock_err || true
+            exit 0
+          fi
+          echo "--- current lock object content ---"
+          cat lock.json
+          LOCK_ID="$(python3 -c "import json;print(json.load(open('lock.json')).get('ID',''))")"
+          echo "id=$LOCK_ID" >> "$GITHUB_OUTPUT"
+          echo "detected lock ID: $LOCK_ID"
+
+      - name: Terraform force-unlock
+        if: ${{ steps.lock.outputs.id != '' }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform force-unlock -force "${{ steps.lock.outputs.id }}"
+
+      - name: Verify lock released
+        if: ${{ steps.lock.outputs.id != '' }}
+        run: |
+          set -euo pipefail
+          LOCK_OBJ="${TF_STATE_KEY:-oci-provision.tfstate}.lock"
+          if oci os object get --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ" --file /dev/null 2>/dev/null; then
+            echo "::warning::lock object still present - it may have been re-acquired by a running apply, or force-unlock did not remove it. Inspect: oci os object get --bucket-name $TF_STATE_BUCKET --name $LOCK_OBJ --file -"
+            exit 1
+          fi
+          echo "lock object gone - state is writable again"
+
+      - name: Summary
+        run: |
+          {
+            echo "## State lock released"
+            echo ""
+            echo "- Lock ID: \`${{ steps.lock.outputs.id }}\`"
+            echo "- Stale locks happen when a run is cancelled mid-apply; this workflow is safe to re-run anytime."
+          } >> "$GITHUB_STEP_SUMMARY"
