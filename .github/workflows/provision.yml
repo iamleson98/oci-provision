@@ -155,7 +155,7 @@ jobs:
             echo "$OUT"
             [ $RC -eq 0 ] && exit 0
             if printf '%s' "$OUT" | grep -qiE 'out of (host )?capacity'; then
-              echo "::warning::attempt $attempt/$RETRIES hit 'Out of capacity'. Physical host capacity cannot be pre-checked by any API - hosts in this AD are dry right now. More retries NOW rarely help; the effective options are: (1) set repo variable OFF_PEAK_PROVISION=true to auto-hunt at 04:00 local time, (2) try another AD (multi-AD regions only), (3) upgrade to Pay As You Go - Always Free resources stay $0 and launch priority improves (docs/TROUBLESHOOTING.md#out-of-host-capacity)."
+              echo "::warning::attempt $attempt/$RETRIES hit 'Out of capacity'. Physical host capacity cannot be pre-checked by any API - hosts in this AD are dry right now. More retries NOW rarely help; the effective options are: (1) set repo variable OFF_PEAK_PROVISION=true to auto-hunt at 04:00 local time, (2) try another AD (multi-AD regions only), (3) upgrade to Pay As You Go - Always Free resources stay \$0 and launch priority improves (docs/TROUBLESHOOTING.md#out-of-host-capacity)."
               [ "$attempt" = "$RETRIES" ] && break
               sleep 120
             else
