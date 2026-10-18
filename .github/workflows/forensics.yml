@@ -47,12 +47,13 @@ jobs:
           oci os object list --bucket-name "$TF_STATE_BUCKET" --all \
             --query 'data[*].{name:name,size:"size"}' --raw-output 2>&1
           echo
-          echo "### FULL version history (all versions + delete markers, newest first):"
+          echo "### LOCK object versions only (newest first):"
           oci os object list-object-versions --bucket-name "$TF_STATE_BUCKET" --all \
-            --query 'data[*].{name:name,versionId:"version-id",timeCreated:"time-created",isDeleteMarker:"is-delete-marker",size:"size"}' --raw-output 2>&1 | head -60
+            --query 'data[?name==`oci-provision.tfstate.lock`].{versionId:"version-id",timeCreated:"time-created",isDeleteMarker:"is-delete-marker",size:"size"}' --raw-output 2>&1
           echo
-          echo "### Lock object current content (if live):"
+          echo "### STATE object version count:"
+          oci os object list-object-versions --bucket-name "$TF_STATE_BUCKET" --all \
+            --query 'length(data[?name==`oci-provision.tfstate`])' --raw-output 2>&1
+          echo
+          echo "### Lock object content (FULL error if any - NOT truncated):"
           oci os object get --bucket-name "$TF_STATE_BUCKET" --name oci-provision.tfstate.lock --file - 2>&1 || true
-          echo
-          echo "### State object head (metadata):"
-          oci os object head --bucket-name "$TF_STATE_BUCKET" --name oci-provision.tfstate 2>&1 | head -20 || true
