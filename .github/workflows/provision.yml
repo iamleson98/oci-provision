@@ -36,7 +36,7 @@ jobs:
   provision:
     name: terraform plan + apply
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 100
     outputs:
       a1_ip: ${{ steps.out.outputs.a1_ip }}
       waker_ip: ${{ steps.out.outputs.waker_ip }}
@@ -116,19 +116,19 @@ jobs:
       - name: Terraform apply (auto-retries while OCI reports capacity shortage)
         run: |
           set +e
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 28); do
             OUT=$(terraform -chdir=terraform apply -input=false -auto-approve -no-color 2>&1)
             RC=$?
             echo "$OUT"
             [ $RC -eq 0 ] && exit 0
             if printf '%s' "$OUT" | grep -qiE 'out of (host )?capacity'; then
-              echo "::warning::attempt $attempt hit 'Out of capacity' - retrying in 90s. If this persists: rerun with a different availability_domain_index (or a different region for a new account)."
-              sleep 90
+              echo "::warning::attempt $attempt hit 'Out of capacity' - retrying in 120s. If this persists: the region/AD is dry (single-AD regions like ap-singapore-1 have no AD rotation) - wait a few hours and re-run, or upgrade to Pay As You Go (free resources stay $0, capacity priority jumps, idle reclamation exempt)."
+              sleep 120
             else
               exit $RC
             fi
           done
-          echo "::error::gave up after 20 capacity retries (~30 min). Try another AD via the availability_domain_index input, or wait a few hours."
+          echo "::error::gave up after 28 capacity retries (~1 hour). The region is genuinely dry right now - re-run this workflow in a few hours (it is idempotent), or see docs/TROUBLESHOOTING.md for the PAYG option."
           exit 1
 
       - name: Collect outputs
