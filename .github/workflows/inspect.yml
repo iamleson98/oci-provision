@@ -22,7 +22,7 @@ jobs:
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
       OCI_CLI_AUTH: api_key
-      TF_STATE_BUCKET: oci-provision-tfstate
+      TF_STATE_BUCKET: oci-provision-tfstate2
     steps:
       - name: Preflight - required secrets
         run: |
@@ -79,6 +79,33 @@ jobs:
 
           echo "### Availability Domains:"
           oci iam availability-domain list -c "$C" --query 'data[*].name' --raw-output 2>&1 | head -5
+
+      - name: Report object-storage state (read-only)
+        run: |
+          set -euo pipefail
+
+          echo "### Object storage namespace (auth + tenancy sanity):"
+          oci os ns get 2>&1
+          echo
+
+          echo "### Buckets visible in the tenancy root compartment (read-only):"
+          if OUT="$(oci os bucket list -c "$OCI_CLI_TENANCY" --all 2>&1)"; then
+            printf '%s\n' "$OUT" | head -40
+          else
+            echo "bucket list FAILED - likely an IAM/authorization problem on object storage:"
+            printf '%s\n' "$OUT" | grep -aE '"code"|"status"|"message"|Authorization|Authorized' | head -6 | sed 's/^/    /'
+          fi
+          echo
+
+          echo "### get on candidate state buckets (existence + exact error):"
+          for B in oci-provision-tfstate oci-provision-tfstate2; do
+            if OUT="$(oci os bucket get --bucket-name "$B" 2>&1)"; then
+              echo "bucket '$B': EXISTS"
+            else
+              echo "bucket '$B': get failed:"
+              printf '%s\n' "$OUT" | grep -aE '"code"|"status"|"message"' | head -4 | sed 's/^/    /'
+            fi
+          done
 
       - name: Summary
         run: echo "Inspect finished - see step output above (read-only, changed nothing)" >> "$GITHUB_STEP_SUMMARY"

@@ -22,7 +22,7 @@ jobs:
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
       OCI_CLI_AUTH: api_key
-      TF_STATE_BUCKET: oci-provision-tfstate
+      TF_STATE_BUCKET: oci-provision-tfstate2
     steps:
       - name: Preflight - required secrets
         run: |
