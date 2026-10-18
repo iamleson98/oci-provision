@@ -14,8 +14,8 @@ What CANNOT be checked (no public OCI API exists for it):
   3. Physical host capacity. The ONLY definitive test is a launch attempt.
      If shape+quota are green but apply still returns "Out of host capacity",
      the AD's hosts are simply dry. Remedies, in order of effectiveness:
-       a. Off-peak retries - enable repo variable OFF_PEAK_PROVISION=true and
-          the Provision workflow hunts automatically at 04:00 local time.
+       a. Scheduled hunting - the Provision workflow retries automatically
+          ~10x/day (an auto-quit guard skips runs once provisioned).
        b. Another availability domain (multi-AD regions only; e.g. Singapore
           has exactly one).
        c. Upgrade to Pay As You Go - Always Free resources stay $0 (official
@@ -229,7 +229,7 @@ def main() -> int:
         print("Verdict: shapes supported and quota available - a launch attempt is worth making.")
         print("NOTE: physical host capacity cannot be pre-checked (no public OCI API).")
         print("      If apply still hits 'Out of host capacity', the AD's hosts are dry:")
-        print("      -> set repo variable OFF_PEAK_PROVISION=true (auto-hunts at 04:00 local),")
+        print("      -> wait for the scheduled hunt (~10x/day, automatic; quits once provisioned),")
         print("      -> or use another AD (multi-AD regions only),")
         print("      -> or upgrade to Pay As You Go (Always Free resources stay $0; launch priority improves).")
     return rc

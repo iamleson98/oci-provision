@@ -28,11 +28,14 @@ on:
         description: "Launch attempts when OCI reports 'Out of host capacity' (0 = single try, no retries)"
         default: "6"
   schedule:
-    # Off-peak capacity hunt, 04:00 Asia/Singapore (lowest-demand window).
-    # OPT-IN: only runs when repo variable OFF_PEAK_PROVISION=true.
-    # Once the stack is provisioned, runs become idempotent no-ops (apply is
-    # skipped when the plan reports no changes).
-    - cron: "0 20 * * *"
+    # Capacity-hunt lottery: 10 runs/day, spread every 2-3 h around the
+    # clock (UTC; 07:00 / 09:00 / 12:00 / ... Asia/Singapore). ap-singapore-1
+    # host capacity frees up unpredictably, so more samples = more chances.
+    # Fully automatic: once the stack exists the auto-quit guard (first
+    # job) ends each run green in ~1 min, and a dry hunt ends green with a
+    # warning instead of spamming failure alerts ~10x/day.
+    # Pause anytime: Actions -> Provision -> "..." -> Disable workflow.
+    - cron: "0 0,2,5,7,10,12,14,17,19,22 * * *"
 
 permissions:
   contents: read
@@ -42,11 +45,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  auto_quit:
+    name: auto-quit guard (already provisioned?)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      provisioned: ${{ steps.guard.outputs.provisioned }}
+    env:
+      OCI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_COMPARTMENT: ${{ secrets.OCI_COMPARTMENT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for live servers (skip the hunt when the stack exists)
+        id: guard
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet oci
+          python3 scripts/already_provisioned.py
+
   provision:
     name: terraform plan + apply
-    # manual runs always proceed; the scheduled off-peak hunt requires the
-    # repo variable OFF_PEAK_PROVISION=true (opt-in)
-    if: github.event_name == 'workflow_dispatch' || vars.OFF_PEAK_PROVISION == 'true'
+    needs: auto_quit
+    # AUTO-QUIT: the guard above found live servers -> nothing to hunt, the
+    # whole run ends here (green, ~1 min). Manual dispatches are skipped on
+    # purpose too - to redeploy software on existing servers use the
+    # Deploy stack workflow instead.
+    if: needs.auto_quit.outputs.provisioned != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -54,6 +82,7 @@ jobs:
       waker_ip: ${{ steps.out.outputs.waker_ip }}
       a1_id: ${{ steps.out.outputs.a1_id }}
       deployed: ${{ steps.plan.outputs.changes }}
+      outcome: ${{ steps.apply.outputs.outcome }}
     env:
       OCI_REGION: ${{ secrets.OCI_REGION }}
       OCI_NAMESPACE: ${{ secrets.OCI_NAMESPACE }}
@@ -85,6 +114,13 @@ jobs:
         env:
           SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
           COMPARTMENT: ${{ secrets.OCI_COMPARTMENT }}
+          # inputs.* is EMPTY on schedule events - exporting an empty
+          # TF_VAR_* would override the terraform default with "" and fail
+          # plan validation, so only non-empty values are exported below.
+          IN_RUNNER_PROFILE: ${{ inputs.runner_profile }}
+          IN_ENABLE_WAKER: ${{ inputs.enable_waker }}
+          IN_AD_INDEX: ${{ inputs.availability_domain_index }}
+          IN_ADMIN_CIDR: ${{ inputs.admin_cidr }}
         run: |
           {
             echo "TF_VAR_auth=ApiKey"
@@ -94,10 +130,10 @@ jobs:
             echo "TF_VAR_fingerprint=$OCI_FINGERPRINT"
             printf 'TF_VAR_private_key<<PEMEOF\n%s\nPEMEOF\n' "$(printf '%s' "$OCI_PRIVATE_KEY" | sed 's/\\n/\n/g')"
             if [ -n "$SSH_PUB" ]; then echo "TF_VAR_ssh_public_key=$SSH_PUB"; fi
-            echo "TF_VAR_runner_profile=${{ inputs.runner_profile }}"
-            echo "TF_VAR_enable_waker=${{ inputs.enable_waker }}"
-            echo "TF_VAR_availability_domain_index=${{ inputs.availability_domain_index }}"
-            echo "TF_VAR_admin_cidr=${{ inputs.admin_cidr }}"
+            if [ -n "$IN_RUNNER_PROFILE" ]; then echo "TF_VAR_runner_profile=$IN_RUNNER_PROFILE"; fi
+            if [ -n "$IN_ENABLE_WAKER" ]; then echo "TF_VAR_enable_waker=$IN_ENABLE_WAKER"; fi
+            if [ -n "$IN_AD_INDEX" ]; then echo "TF_VAR_availability_domain_index=$IN_AD_INDEX"; fi
+            if [ -n "$IN_ADMIN_CIDR" ]; then echo "TF_VAR_admin_cidr=$IN_ADMIN_CIDR"; fi
             if [ -n "$COMPARTMENT" ]; then echo "TF_VAR_compartment_ocid=$COMPARTMENT"; fi
           } >> "$GITHUB_ENV"
           true
@@ -142,6 +178,7 @@ jobs:
           fi
 
       - name: Terraform apply (bounded capacity retries - see capacity_retries input)
+        id: apply
         if: ${{ steps.plan.outputs.changes != 'false' }}
         env:
           CAPACITY_RETRIES: ${{ inputs.capacity_retries || '6' }}
@@ -153,20 +190,22 @@ jobs:
             OUT=$(terraform -chdir=terraform apply -input=false -auto-approve -no-color 2>&1)
             RC=$?
             echo "$OUT"
-            [ $RC -eq 0 ] && exit 0
+            [ $RC -eq 0 ] && { echo "outcome=applied" >> "$GITHUB_OUTPUT"; exit 0; }
             if printf '%s' "$OUT" | grep -qiE 'out of (host )?capacity'; then
-              echo "::warning::attempt $attempt/$RETRIES hit 'Out of capacity'. Physical host capacity cannot be pre-checked by any API - hosts in this AD are dry right now. More retries NOW rarely help; the effective options are: (1) set repo variable OFF_PEAK_PROVISION=true to auto-hunt at 04:00 local time, (2) try another AD (multi-AD regions only), (3) upgrade to Pay As You Go - Always Free resources stay \$0 and launch priority improves (docs/TROUBLESHOOTING.md#out-of-host-capacity)."
+              echo "::warning::attempt $attempt/$RETRIES hit 'Out of capacity'. Physical host capacity cannot be pre-checked by any API - hosts in this AD are dry right now. More retries NOW rarely help; the effective options are: (1) wait - the schedule hunts automatically ~10x/day, (2) try another AD (multi-AD regions only), (3) upgrade to Pay As You Go - Always Free resources stay \$0 and launch priority improves (docs/TROUBLESHOOTING.md#out-of-host-capacity)."
               [ "$attempt" = "$RETRIES" ] && break
               sleep 120
             else
               exit $RC
             fi
           done
-          echo "::error::still 'Out of capacity' after $RETRIES bounded attempts. This is host exhaustion in the AD, not a bug: enable OFF_PEAK_PROVISION=true (auto retry at 04:00 local), or see docs/TROUBLESHOOTING.md#out-of-host-capacity for the decision matrix."
-          exit 1
+          echo "outcome=dry" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Capacity dry::still 'Out of capacity' after $RETRIES bounded attempts. This is host exhaustion in the AD, not a bug - the run is green on purpose (a dry hunt is a completed check, not a failure) so ~10 scheduled hunts/day do not spam failure alerts; the next hunt is already scheduled. Decision matrix: docs/TROUBLESHOOTING.md#out-of-host-capacity."
+          exit 0
 
       - name: Collect outputs
         id: out
+        if: ${{ steps.plan.outputs.changes == 'false' || steps.apply.outputs.outcome == 'applied' }}
         run: |
           cd terraform
           echo "a1_ip=$(terraform output -raw a1_public_ip)"       >> "$GITHUB_OUTPUT"
@@ -174,26 +213,42 @@ jobs:
           echo "waker_ip=$(terraform output -raw waker_public_ip)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: ${{ always() }}
         run: |
+          OUTCOME="${{ steps.apply.outputs.outcome }}"
+          CHANGES="${{ steps.plan.outputs.changes }}"
           {
-            echo "## Provisioned"
-            echo "| VM | Public IP |"
-            echo "|---|---|"
-            echo "| A1 worker (${{ inputs.runner_profile }}) | \`${{ steps.out.outputs.a1_ip }}\` |"
-            echo "| Waker (AMD micro) | \`${{ steps.out.outputs.waker_ip }}\` |"
-            echo ""
-            echo "Provision state: ${{ steps.plan.outputs.changes == 'false' && 'already provisioned - apply was a no-op refresh' || 'created/updated' }} (auto-checked before apply to prevent over-provisioning)."
-            echo ""
-            echo "The runner stack is being installed by the **deploy-stack** job below (takes ~10 min: cloud-init, docker, image builds)."
+            if [ "$OUTCOME" = "applied" ]; then
+              echo "## Provisioned"
+              echo "| VM | Public IP |"
+              echo "|---|---|"
+              echo "| A1 worker (${{ inputs.runner_profile }}) | \`${{ steps.out.outputs.a1_ip }}\` |"
+              echo "| Waker (AMD micro) | \`${{ steps.out.outputs.waker_ip }}\` |"
+              echo ""
+              echo "The runner stack is being installed by the **deploy-stack** job below (takes ~10 min: cloud-init, docker, image builds)."
+            elif [ "$CHANGES" = "false" ]; then
+              echo "## Already provisioned (no-op)"
+              echo ""
+              echo "Infrastructure is in sync - apply was skipped (auto-checked before apply to prevent over-provisioning). To force a software redeploy use the **Deploy stack** workflow."
+            elif [ "$OUTCOME" = "dry" ]; then
+              echo "## Capacity hunt: DRY"
+              echo ""
+              echo "No free-tier A1 host capacity in this AD yet (bounded attempts exhausted, hosts genuinely dry). Green on purpose - the schedule keeps hunting ~10x/day and provisions + deploys automatically once a window opens."
+            else
+              echo "## Run incomplete"
+              echo ""
+              echo "A step failed before apply could complete - open the red step in the log above for the exact error."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-stack:
     name: deploy runner stack over SSH
     needs: provision
-    # skip when the run was an idempotent no-op (infra already in sync) - avoids
-    # nightly redeploys from the off-peak schedule; use the Deploy stack
-    # workflow directly to force a redeploy
-    if: needs.provision.result == 'success' && needs.provision.outputs.deployed != 'false'
+    # runs ONLY when apply actually created/updated the stack
+    # (outcome=applied): no-op refreshes and dry capacity hunts skip it -
+    # the ~10x/day schedule would otherwise redeploy constantly; use the
+    # Deploy stack workflow directly to force a redeploy
+    if: needs.provision.result == 'success' && needs.provision.outputs.outcome == 'applied'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

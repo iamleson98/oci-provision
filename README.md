@@ -44,11 +44,12 @@ Two profiles (workflow input):
 
 ### Over-provision protection (auto-check: already provisioned?)
 
-Every provisioning path refuses to create a second server when one already exists — three layers:
+Every provisioning path refuses to create a second server when one already exists — four layers:
 
-1. **CI preflight** (`scripts/preflight_check.py`, runs in Provision/Plan *before* plan/apply): queries the OCI API + terraform state and cross-checks them. Already provisioned → apply proceeds as a no-op refresh; state lost but servers exist → the existing stack is **auto-adopted via `terraform import`** instead of duplicated; a foreign duplicate or an Always Free budget breach (A1 OCPUs > 4 per tenancy, or a 3rd AMD micro) → the run **fails loudly**.
-2. **Terraform-native guards** (`terraform/main.tf` plan-time preconditions): `plan` fails — so `apply` never runs — when a duplicate `gh-runner-a1*`/`gh-runner-waker*` instance is already live, or live A1 OCPUs + planned exceed `overprovision_max_ocpus` (default 4 = the post-June-2026 free envelope; set 2 on free-only accounts).
-3. **capacity_hunter.sh guard**: the manual hunter refuses to start while any live A1 exists (override: `--allow-existing`).
+1. **Auto-quit guard** (`scripts/already_provisioned.py`, first job of every Provision run — including the ~10×/day scheduled capacity hunt): one cheap OCI API call; if any project server (A1 / AMD micro) is already live, the whole run short-circuits green in ~a minute instead of grinding no-op plans ten times a day.
+2. **CI preflight** (`scripts/preflight_check.py`, runs in Provision/Plan *before* plan/apply): queries the OCI API + terraform state and cross-checks them. Already provisioned → apply proceeds as a no-op refresh; state lost but servers exist → the existing stack is **auto-adopted via `terraform import`** instead of duplicated; a foreign duplicate or an Always Free budget breach (A1 OCPUs > 4 per tenancy, or a 3rd AMD micro) → the run **fails loudly**.
+3. **Terraform-native guards** (`terraform/main.tf` plan-time preconditions): `plan` fails — so `apply` never runs — when a duplicate `gh-runner-a1*`/`gh-runner-waker*` instance is already live, or live A1 OCPUs + planned exceed `overprovision_max_ocpus` (default 4 = the post-June-2026 free envelope; set 2 on free-only accounts).
+4. **capacity_hunter.sh guard**: the manual hunter refuses to start while any live A1 exists (override: `--allow-existing`).
 
 Runner *containers* are equally protected at runtime: the controller clamps `desired = min(MAX, max(MIN, busy + queued))`.
 
@@ -58,7 +59,7 @@ Full detail in **[docs/CI_DEPLOYMENT.md](docs/CI_DEPLOYMENT.md)** — the short 
 
 1. **Add secrets** (repo → Settings → Secrets and variables → Actions): `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_PRIVATE_KEY` (API signing key — created in the OCI console under your profile), `OCI_REGION`, and `RUNNER_GITHUB_PAT` (a classic PAT with `repo` scope).
 2. Run the **Bootstrap** workflow once → it creates the versioned state bucket and auto-saves secret `OCI_NAMESPACE` (using `RUNNER_GITHUB_PAT`; falls back to printing the value for manual entry).
-3. Run the **Provision** workflow (default inputs are fine) → ~15 min later the summary shows your VM IPs and the runner stack is live.
+3. Run the **Provision** workflow (default inputs are fine) → ~15 min later the summary shows your VM IPs and the runner stack is live. If the A1 launch hits "Out of host capacity", don't babysit it — the workflow also hunts automatically **~10×/day on schedule** and provisions + deploys the moment a slot frees up (an auto-quit guard keeps later runs to ~1-min no-ops).
 4. In the repo you want CI'd, use:
 
 ```yaml

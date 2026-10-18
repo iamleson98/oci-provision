@@ -134,6 +134,15 @@ Inputs:
 
 What the run does (≈ 10-20 min end to end):
 
+0. **Auto-quit guard (first job)** — `scripts/already_provisioned.py` makes one
+   cheap OCI API call before anything heavy runs. The Provision workflow is
+   **scheduled ~10×/day** (every 2–3 h around the clock) to lottery-snipe A1
+   host capacity; once the stack exists the guard ends every scheduled run
+   green in about a minute (plan/apply/deploy all skipped). A hunt that finds
+   no capacity also ends **green** with a "Capacity dry" warning — a dry hunt
+   is a completed check, not a failure — so ~10 runs/day do not spam failure
+   alerts. Pause the lottery anytime: Actions → Provision → "..." →
+   *Disable workflow*.
 1. **Over-provision auto-check** — `scripts/preflight_check.py` queries the OCI
    API and the terraform state *before* any plan/apply:
    - servers already tracked in state and live → "already provisioned", apply
@@ -156,12 +165,13 @@ What the run does (≈ 10-20 min end to end):
    `terraform/main.tf` fail the plan when a duplicate `gh-runner-a1*` /
    `gh-runner-waker*` instance is already live, independent of state.)
 4. `terraform apply` — **bounded retries** (`capacity_retries`, default 6)
-   when OCI reports "Out of host capacity" (the notorious A1 issue). If it
-   still fails: set the repo variable `OFF_PEAK_PROVISION=true` and the
-   workflow hunts automatically every day at 04:00 local region time until
-   it lands (idempotent — later runs are no-ops), or (fastest fix) upgrade
-   the OCI account to Pay-As-You-Go — Always Free resources stay free,
-   capacity priority improves dramatically. Full decision matrix:
+   when OCI reports "Out of host capacity" (the notorious A1 issue). If all
+   attempts come back dry the run ends green with a "Capacity dry" warning —
+   the schedule hunts automatically ~10×/day (see the auto-quit guard above)
+   and provisions + deploys the moment a slot frees up; no variable to set,
+   nothing to babysit. For the fast path instead: upgrade the OCI account to
+   Pay-As-You-Go — Always Free resources stay free, capacity priority
+   improves dramatically. Full decision matrix:
    TROUBLESHOOTING.md → "Out of host capacity".
 5. Cloud-init hardens and sets up both VMs (docker, ufw, fail2ban, unattended
    upgrades, qemu for multi-arch builds, swap).

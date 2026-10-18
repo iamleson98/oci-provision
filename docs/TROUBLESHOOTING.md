@@ -23,13 +23,17 @@ your quota. Research-backed notes:
 
 In order of effectiveness:
 
-1. **Off-peak scheduled hunting (automated, free)** — create the repo
-   variable `OFF_PEAK_PROVISION=true` (Settings → Secrets and variables →
-   Actions → Variables). The Provision workflow then runs itself daily at
-   **04:00 local region time** (the lowest-demand window, when capacity
-   releases are most likely) with bounded retries. It is idempotent: once
-   the stack lands, later runs become no-ops and skip the deploy job.
-   Delete the variable (or set `false`) once provisioned.
+1. **Scheduled capacity hunt (automated, free, already enabled)** — the
+   Provision workflow runs itself **~10×/day** (every 2–3 h around the
+   clock; see the `schedule:` block in `.github/workflows/provision.yml`)
+   with bounded launch retries per run. It is fully automatic: an
+   **auto-quit guard** (first job — one OCI API call via
+   `scripts/already_provisioned.py`) skips plan/apply/deploy once the
+   stack exists, and a dry hunt ends green with a "Capacity dry" warning
+   instead of failure alerts. No repo variable needed; pause anytime via
+   Actions → Provision → "..." → *Disable workflow*. Caveat: GitHub
+   auto-disables schedules after 60 days of repo inactivity (it emails you
+   first) — any commit or a one-click re-enable restarts the hunt.
 2. **Retry now, bounded** — re-run Provision with a higher `capacity_retries`
    input. Capacity frees up constantly; `scripts/capacity_hunter.sh` also
    automates this from Cloud Shell:
@@ -251,11 +255,12 @@ both and echo them on failure.
 ### Apply fails with `Out of host capacity` (after the bounded retries)
 
 Apply stops after `capacity_retries` attempts (default 6 — no more hour-long
-grinds; retrying a dry AD rarely lands). See the full decision matrix at the
-top of this file ("Out of host capacity" when creating the A1 instance"):
-enable `OFF_PEAK_PROVISION=true` for automated 04:00-local hunting, rotate AD
-in multi-AD regions, or upgrade to PAYG. The **capacity pre-check** step in
-the Provision/Plan logs also shows exactly which shapes/quota your AD has.
+grinds; retrying a dry AD rarely lands) and the run ends **green** with a
+"Capacity dry" warning — by design, so the ~10 scheduled hunts/day do not
+spam failure alerts. The schedule keeps hunting automatically; other levers:
+rotate AD in multi-AD regions, or upgrade to PAYG for the fast path (decision
+matrix at the top of this file). The **capacity pre-check** step in the
+Provision/Plan logs also shows exactly which shapes/quota your AD has.
 
 Last resort: `scripts/capacity_hunter.sh` in OCI Cloud Shell (creates an
 instance outside terraform state — the Provision preflight auto-adopts it on
