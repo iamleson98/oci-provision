@@ -1,0 +1,84 @@
+name: Inspect (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oci-provision-tf
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: report images / instances / limits
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
+      OCI_CLI_AUTH: api_key
+      TF_STATE_BUCKET: oci-provision-tfstate
+    steps:
+      - name: Preflight - required secrets
+        run: |
+          miss=0
+          check() { [ -n "$2" ] || { echo "::error title=Missing secret::$1 is not set - see docs/CI_DEPLOYMENT.md"; miss=1; }; }
+          check OCI_TENANCY_OCID "$OCI_CLI_TENANCY"
+          check OCI_USER_OCID "$OCI_CLI_USER"
+          check OCI_FINGERPRINT "$OCI_CLI_FINGERPRINT"
+          check OCI_PRIVATE_KEY "$OCI_CLI_KEY_CONTENT"
+          check OCI_REGION "$OCI_CLI_REGION"
+          [ "$miss" = 0 ] || exit 1
+
+      - name: Install OCI CLI
+        run: |
+          python3 -m pip install --user --quiet oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Report tenancy state (read-only)
+        run: |
+          set -euo pipefail
+          C="$OCI_CLI_TENANCY"   # root compartment (OCI_COMPARTMENT secret is optional)
+
+          echo "### Region: $OCI_CLI_REGION"
+          echo
+
+          echo "### Ubuntu operating-system-version values available (arm-compatible query, unfiltered by version):"
+          oci compute image list -c "$C" --operating-system "Canonical Ubuntu" --all \
+            --query 'data[*]."operating-system-version"' --raw-output 2>&1 | sort | uniq -c | sort -rn | head -20
+          echo
+
+          echo "### Ubuntu image display names matching shape VM.Standard.A1.Flex (newest 15):"
+          oci compute image list -c "$C" --operating-system "Canonical Ubuntu" \
+            --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC --all \
+            --query 'data[*]."display-name"' --raw-output 2>&1 | head -15
+          echo
+
+          echo "### Ubuntu image display names matching shape VM.Standard.E2.1.Micro (newest 15):"
+          oci compute image list -c "$C" --operating-system "Canonical Ubuntu" \
+            --shape "VM.Standard.E2.1.Micro" --sort-by TIMECREATED --sort-order DESC --all \
+            --query 'data[*]."display-name"' --raw-output 2>&1 | head -15
+          echo
+
+          echo "### Query with exact current terraform filters (os=Canonical Ubuntu, ver=24.04, shape=A1.Flex):"
+          N=$(oci compute image list -c "$C" --operating-system "Canonical Ubuntu" \
+            --operating-system-version "24.04" --shape "VM.Standard.A1.Flex" --all \
+            --query 'length(data)' --raw-output 2>&1)
+          echo "matched images: $N"
+          echo
+
+          echo "### Live instances (any state) in root compartment:"
+          oci compute instance list -c "$C" --all \
+            --query 'data[*].{name:"display-name",state:"lifecycle-state",shape:shape}' --raw-output 2>&1 | head -20
+          echo
+
+          echo "### Availability Domains:"
+          oci iam availability-domain list -c "$C" --query 'data[*].name' --raw-output 2>&1 | head -5
+
+      - name: Summary
+        run: echo "Inspect finished - see step output above (read-only, changed nothing)" >> "$GITHUB_STEP_SUMMARY"
