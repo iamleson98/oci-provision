@@ -48,7 +48,7 @@ jobs:
             --query 'data[*].{name:name,size:"size"}' --raw-output 2>&1
           echo
           echo "### FULL version history (all versions + delete markers, newest first):"
-          oci os object-version list --bucket-name "$TF_STATE_BUCKET" --all \
+          oci os object list-object-versions --bucket-name "$TF_STATE_BUCKET" --all \
             --query 'data[*].{name:name,versionId:"version-id",timeCreated:"time-created",isDeleteMarker:"is-delete-marker",size:"size"}' --raw-output 2>&1 | head -60
           echo
           echo "### Lock object current content (if live):"
