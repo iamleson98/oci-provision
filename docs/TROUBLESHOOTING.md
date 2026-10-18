@@ -260,8 +260,8 @@ stubborn resource, remove it from state then destroy the rest:
 
 ```
 # from a machine with the OCI_* env (or Cloud Shell with the state pulled):
-terraform -ch-dir=terraform state rm oci_core_instance.a1
-terraform -ch-dir=terraform destroy
+terraform -chdir=terraform state rm oci_core_instance.a1
+terraform -chdir=terraform destroy
 ```
 
 ### Importing a manually-hunted instance into terraform state
@@ -269,7 +269,7 @@ terraform -ch-dir=terraform destroy
 If you used `scripts/capacity_hunter.sh`:
 
 ```
-terraform -ch-dir=terraform import oci_core_instance.a1 ocid1.instance.oc1...
+terraform -chdir=terraform import oci_core_instance.a1 ocid1.instance.oc1...
 ```
 
 Then re-run **Provision** to attach the VCN/security-list-managed parts it

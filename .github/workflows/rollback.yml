@@ -75,7 +75,7 @@ jobs:
         run: bash scripts/tf_init.sh
 
       - name: Terraform destroy
-        run: terraform -ch-dir=terraform destroy -input=false -auto-approve -no-color
+        run: terraform -chdir=terraform destroy -input=false -auto-approve -no-color
 
       - name: Summary
         run: |

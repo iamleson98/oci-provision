@@ -48,7 +48,7 @@ jobs:
 
       - name: Read key from state
         run: |
-          terraform -ch-dir=terraform output -raw ssh_private_key_pem > key.pem
+          terraform -chdir=terraform output -raw ssh_private_key_pem > key.pem
           if [ ! -s key.pem ]; then
             echo "::notice::state has no generated key (a custom SSH key was provided) - nothing to export"
             echo "CUSTOM_KEY=true" >> "$GITHUB_ENV"

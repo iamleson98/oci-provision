@@ -87,7 +87,7 @@ jobs:
           python3 scripts/preflight_check.py --on-untracked report
 
       - name: Terraform plan
-        run: terraform -ch-dir=terraform plan -input=false -no-color
+        run: terraform -chdir=terraform plan -input=false -no-color
 
       - name: Summary
         run: echo "Plan finished - full diff is in the 'Terraform plan' step log above." >> "$GITHUB_STEP_SUMMARY"

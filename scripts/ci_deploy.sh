@@ -30,7 +30,7 @@ TF_DIR="$REPO_ROOT/terraform"
 # ------------------------------------------------------------------ ssh key
 if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
   echo "[deploy] SSH_PRIVATE_KEY not set - using the terraform-generated key from state"
-  SSH_PRIVATE_KEY="$(terraform -ch-dir="$TF_DIR" output -raw ssh_private_key_pem)"
+  SSH_PRIVATE_KEY="$(terraform -chdir="$TF_DIR" output -raw ssh_private_key_pem)"
 fi
 if [ -z "$SSH_PRIVATE_KEY" ]; then
   echo "::error::no SSH private key available (state has none because a custom key was provided, and SSH_PRIVATE_KEY is empty)" >&2

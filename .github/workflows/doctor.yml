@@ -55,12 +55,12 @@ jobs:
 
       - name: Resolve SSH key + IP
         run: |
-          A1_IP="$(terraform -ch-dir=terraform output -raw a1_public_ip)"
+          A1_IP="$(terraform -chdir=terraform output -raw a1_public_ip)"
           {
             echo "A1_IP=$A1_IP"
             if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
               echo "SSH_PRIVATE_KEY<<KEYEOF"
-              terraform -ch-dir=terraform output -raw ssh_private_key_pem
+              terraform -chdir=terraform output -raw ssh_private_key_pem
               echo "KEYEOF"
             fi
           } >> "$GITHUB_ENV"
