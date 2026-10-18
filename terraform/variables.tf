@@ -144,6 +144,28 @@ variable "create_waker_iam" {
 }
 
 # ----------------------------------------------------------------------------
+# Over-provision protection
+# ----------------------------------------------------------------------------
+variable "overprovision_max_ocpus" {
+  description = <<-EOT
+    Hard ceiling on TOTAL live Ampere A1 OCPUs allowed in the compartment.
+    Terraform refuses to create the A1 worker when live A1 OCPUs plus the
+    planned worker would exceed this value (plan-time precondition, so apply
+    never runs). Default 4 = the post-June-2026 Always Free tenancy envelope
+    (PAYG accounts keep 4 OCPU / 24 GB; free-only accounts are forcibly stopped
+    above 2 OCPU / 12 GB - set 2 there for extra safety). Raise it only if you
+    deliberately want to pay for A1 capacity.
+  EOT
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.overprovision_max_ocpus >= 1 && var.overprovision_max_ocpus <= 8
+    error_message = "overprovision_max_ocpus must be between 1 and 8."
+  }
+}
+
+# ----------------------------------------------------------------------------
 # Misc
 # ----------------------------------------------------------------------------
 variable "instance_name_prefix" {

@@ -20,9 +20,13 @@
 #     --shape-cpus 2 --shape-memory 12  # default 2/12 (post-2026 free limit)
 #     --fallbacks "2,12;1,6"           # shapes tried in order after primary fails
 #     --interval 30
+#     --allow-existing                  # skip the over-provision guard
 #
-# Without --subnet the script creates/uses a hunter-specific VCN+subnet+IGW
-# so it works completely standalone (then terraform import or just use it).
+# Over-provision guard: by default the hunter REFUSES to start when a live
+# VM.Standard.A1.Flex instance already exists in the compartment (or when
+# adding the hunted shape would exceed $OCPU_BUDGET total A1 OCPUs, default 4
+# = the post-June-2026 Always Free tenancy envelope). Pass --allow-existing to
+# override - anything beyond the envelope bills on non-free accounts.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -35,6 +39,8 @@ FALLBACKS="2,12;1,6"
 INTERVAL=30
 REGION="${OCI_CLI_REGION:-}"
 PREFIX="gh-runner-hunt"
+ALLOW_EXISTING=0
+OCPU_BUDGET="${OCPU_BUDGET:-4}"
 
 log()  { printf '\033[1;36m[hunt]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[hunt]\033[0m %s\n' "$*" >&2; }
@@ -50,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --fallbacks)   FALLBACKS="$2"; shift 2 ;;
     --interval)    INTERVAL="$2"; shift 2 ;;
     --region)      REGION="$2"; shift 2 ;;
+    --allow-existing) ALLOW_EXISTING=1; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -60,6 +67,30 @@ command -v jq >/dev/null  || die "jq not found"
 [[ -n "$SSH_KEY_FILE" ]] || die "--ssh-key is required (path to a .pub)"
 SSH_KEY="$(cat "$SSH_KEY_FILE")"
 SSH_KEY_FILE="$(realpath "$SSH_KEY_FILE")"
+
+# ---------------------------------------------------------- over-provision guard
+# Auto-check whether a server is already provisioned, to prevent over
+# provision: every successful hunt creates a NEW A1 instance, so refuse to
+# start when one is already there. (Note: this lists the given compartment
+# only - instances in other compartments of the tenancy are not counted.)
+if (( ALLOW_EXISTING == 0 )); then
+  log "over-provision guard: checking for existing A1 instances..."
+  INSTANCES_JSON="$(oci compute instance list -c "$COMPARTMENT" --all 2>/dev/null || true)"
+  if [[ -n "$INSTANCES_JSON" ]]; then
+    A1_LIVE="$(jq '[.data[] | select(."lifecycle-state" != "TERMINATED" and ."lifecycle-state" != "TERMINATING" and .shape == "VM.Standard.A1.Flex")] | length' <<<"$INSTANCES_JSON" 2>/dev/null || echo 0)"
+    A1_OCPUS="$(jq '[.data[] | select(."lifecycle-state" != "TERMINATED" and ."lifecycle-state" != "TERMINATING" and .shape == "VM.Standard.A1.Flex") | ."shape-config".ocpus // 0] | add // 0' <<<"$INSTANCES_JSON" 2>/dev/null || echo 0)"
+    A1_LIVE="${A1_LIVE:-0}"; A1_OCPUS="${A1_OCPUS:-0}"
+    if (( A1_LIVE > 0 )); then
+      die "over-provision guard: ${A1_LIVE} live VM.Standard.A1.Flex instance(s) totaling ${A1_OCPUS} OCPU already exist in this compartment - a server is already provisioned. Terminate it first, or re-run with --allow-existing (anything beyond OCPU_BUDGET=${OCPU_BUDGET} bills on non-free accounts)."
+    fi
+    if (( $(awk -v a="$A1_OCPUS" -v b="$SHAPE_CPUS" 'BEGIN{printf "%d", (a+b)}') > OCPU_BUDGET )); then
+      die "over-provision guard: existing ${A1_OCPUS} A1 OCPU + requested ${SHAPE_CPUS} would exceed OCPU_BUDGET=${OCPU_BUDGET} (post-June-2026 Always Free envelope). Lower --shape-cpus or raise OCPU_BUDGET consciously."
+    fi
+    log "guard passed: no live A1 instances, ${A1_OCPUS} OCPU in use."
+  else
+    warn "could not list instances (auth/permissions?) - continuing WITHOUT the over-provision guard."
+  fi
+fi
 
 # ---------------------------------------------------------------- networking
 if [[ -z "$SUBNET" ]]; then

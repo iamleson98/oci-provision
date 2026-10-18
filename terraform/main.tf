@@ -12,8 +12,8 @@ locals {
   ssh_public_key   = local.generate_ssh_key ? trimspace(tls_private_key.ssh[0].public_key_openssh) : local.provided_ssh_key
 
   # Derived shape for the A1 worker based on profile (explicit vars win)
-  a1_ocpus   = var.a1_ocpus > 0 ? var.a1_ocpus : (var.runner_profile == "burst" ? 4 : 2)
-  a1_memory  = var.a1_memory_gbs > 0 ? var.a1_memory_gbs : (var.runner_profile == "burst" ? 24 : 12)
+  a1_ocpus  = var.a1_ocpus > 0 ? var.a1_ocpus : (var.runner_profile == "burst" ? 4 : 2)
+  a1_memory = var.a1_memory_gbs > 0 ? var.a1_memory_gbs : (var.runner_profile == "burst" ? 24 : 12)
 }
 
 # Dedicated SSH keypair, generated when none is provided (the CI flow). The
@@ -65,6 +65,52 @@ data "oci_core_images" "ubuntu_x86" {
 
   sort_by    = "TIMECREATED"
   sort_order = "DESC"
+}
+
+# -----------------------------------------------------------------------------
+# Over-provision guard: auto-check what ALREADY exists before creating more
+# -----------------------------------------------------------------------------
+# Terraform-native layer of the over-provision protection. Reads every instance
+# currently live in the target compartment so that plan/apply can refuse to
+# create duplicates - even when terraform state is missing, stale or was reset
+# (e.g. state bucket recreated, different TF_STATE_KEY, or a VM created by hand
+# in the console / by scripts/capacity_hunter.sh).
+#
+# The CI-level layer (state reconciliation + auto-adopt via `terraform import`)
+# lives in scripts/preflight_check.py, which the Provision workflow runs before
+# every plan/apply - see docs/CI_DEPLOYMENT.md "Over-provision protection".
+data "oci_core_instances" "existing" {
+  compartment_id = local.compartment
+}
+
+locals {
+  live_instances = [
+    for inst in data.oci_core_instances.existing.instances : inst
+    if !contains(["TERMINATED", "TERMINATING"], inst.lifecycle_state)
+  ]
+
+  # Instances that look like ours regardless of terraform state (name prefix
+  # match), so duplicates created outside terraform are caught too.
+  live_project_a1 = [
+    for inst in local.live_instances : inst
+    if startswith(inst.display_name, "${var.instance_name_prefix}-a1")
+  ]
+  live_project_waker = [
+    for inst in local.live_instances : inst
+    if startswith(inst.display_name, "${var.instance_name_prefix}-waker")
+  ]
+
+  # Total live Ampere A1 capacity in the compartment, ours + foreign. This is
+  # what the tenancy is really billed metered on - the Always Free envelope is
+  # 4 OCPU / 24 GB post-June-2026 (free-only accounts get stopped above 2).
+  live_a1_ocpus = sum([
+    for inst in local.live_instances : (
+      inst.shape == "VM.Standard.A1.Flex" ? try(inst.shape_config.ocpus, 0) : 0
+    )
+  ])
+
+  # OCPUs terraform would ADD when no project A1 worker is currently live.
+  planned_a1_ocpus = length(local.live_project_a1) == 0 ? local.a1_ocpus : 0
 }
 
 # -----------------------------------------------------------------------------
@@ -211,6 +257,23 @@ resource "oci_core_instance" "a1" {
     "always_free"     = "true"
     "bill_protection" = "size-within-always-free"
   }
+
+  # --------------------------------------------------- over-provision guards
+  # Plan-time preconditions: terraform refuses to create the A1 worker when the
+  # compartment already holds a duplicate worker or the A1 free-tier envelope
+  # is already spent. Failing preconditions abort the plan, so `apply` never
+  # runs - that is what actually prevents over-provisioning.
+  lifecycle {
+    precondition {
+      condition     = length(local.live_project_a1) <= 1
+      error_message = "Over-provision guard: ${length(local.live_project_a1)} non-terminated '${var.instance_name_prefix}-a1*' instances already exist in the compartment, but this configuration manages exactly ONE A1 worker. Creating another would double-burn the Always Free A1 allowance, so terraform refuses. Either terminate the surplus instance in the OCI console, or re-adopt the existing one with 'python3 scripts/preflight_check.py --on-untracked adopt' (see docs/TROUBLESHOOTING.md)."
+    }
+
+    precondition {
+      condition     = local.live_a1_ocpus + local.planned_a1_ocpus <= var.overprovision_max_ocpus
+      error_message = "Over-provision guard: live Ampere A1 OCPUs in the compartment (${local.live_a1_ocpus}) plus the ${local.planned_a1_ocpus} OCPU this configuration would add exceeds overprovision_max_ocpus = ${var.overprovision_max_ocpus}. The post-June-2026 Always Free envelope is 4 OCPU / 24 GB per tenancy (free-only accounts are forcibly stopped above 2 OCPU / 12 GB). Terminate or shrink other A1 instances first, or set overprovision_max_ocpus higher if you deliberately pay."
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -256,6 +319,17 @@ resource "oci_core_instance" "waker" {
   freeform_tags = {
     "project"     = "oci-github-runner"
     "always_free" = "true"
+  }
+
+  # --------------------------------------------------- over-provision guard
+  # Always Free includes only 2 AMD E2.1.Micro instances per tenancy; this
+  # configuration manages one of them. Refuse to create a second waker when
+  # one is already live and unaccounted for.
+  lifecycle {
+    precondition {
+      condition     = length(local.live_project_waker) <= 1
+      error_message = "Over-provision guard: ${length(local.live_project_waker)} non-terminated '${var.instance_name_prefix}-waker*' instances already exist, but this configuration manages exactly ONE waker (Always Free includes 2 AMD micros per tenancy). Terminate the duplicate, or re-adopt the existing one with 'python3 scripts/preflight_check.py --on-untracked adopt' (see docs/TROUBLESHOOTING.md)."
+    }
   }
 }
 

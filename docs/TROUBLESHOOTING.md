@@ -154,6 +154,45 @@ optionally `status_public = true` in terraform.
 
 Primary reference: [CI_DEPLOYMENT.md](CI_DEPLOYMENT.md).
 
+### The over-provision guard fired (`preflight_check.py` / "Over-provision guard")
+
+This is the *auto-check for already-provisioned servers* doing its job: the
+run stopped instead of creating a duplicate VM. Two places can fire it:
+
+* **`scripts/preflight_check.py`** (runs in Provision/Plan before plan/apply).
+  Match the exit code / log line:
+  - `exit 4 — multiple project servers` / `Duplicate project server detected`:
+    more than one `gh-runner-a1*` (or `gh-runner-waker*`) instance is live, or
+    one exists outside terraform state while state tracks another. Terminate
+    the surplus instance in the OCI console (Compute → Instances), then re-run
+    Provision. If terraform state is the stale side, `terraform -chdir=terraform
+    state rm oci_core_instance.<address>` first and let the preflight adopt.
+  - `exit 5 — budget exceeded`: live A1 OCPUs (+ planned) would pass
+    `overprovision_max_ocpus` (default 4 = the post-June-2026 Always Free
+    envelope), or a 3rd AMD micro would be created. Terminate/shrink other A1
+    instances, or set `TF_VAR_overprovision_max_ocpus` deliberately.
+  - `exit 3 — untracked servers + abort`: servers exist but state is empty and
+    `PREFLIGHT_ON_UNTRACKED=abort` was set. CI's default is `adopt`
+    (auto-`terraform import`), which needs no action.
+  - `exit 6 — adoption failed`: a `terraform import` errored (often IAM
+    permissions or an ambiguous duplicate name). Read the step log; fix, then
+    re-run — imports already done are skipped.
+* **`terraform plan` itself fails** with `Over-provision guard:` — that is the
+  plan-time precondition layer in `terraform/main.tf` (independent of state
+  and of the script). Same remedies as above; the message names the exact
+  condition and counts.
+
+Debug any time from a machine with the `OCI_*` env vars:
+
+```bash
+python3 scripts/preflight_check.py --json          # machine-readable findings
+python3 scripts/preflight_check.py --on-untracked abort   # never imports
+```
+
+`scripts/capacity_hunter.sh` has the same guard: it refuses to hunt while any
+live A1 exists in the compartment (`--allow-existing` to override — only sane
+when you consciously want to pay, or after terminating the old one).
+
 ### Preflight fails with `Missing secret: X`
 
 Add the named repo secret (Settings → Secrets and variables → Actions).

@@ -46,5 +46,5 @@ output "ssh_waker" {
 
 output "status_page" {
   description = "Where to watch the runner fleet status."
-  value = var.status_public && var.enable_waker ? "http://${oci_core_instance.waker[0].public_ip}:8080 (token-protected)" : "ssh -N -L 8080:localhost:8080 ubuntu@${var.enable_waker ? oci_core_instance.waker[0].public_ip : oci_core_instance.a1.public_ip} -> http://localhost:8080"
+  value       = var.status_public && var.enable_waker ? "http://${oci_core_instance.waker[0].public_ip}:8080 (token-protected)" : "ssh -N -L 8080:localhost:8080 ubuntu@${var.enable_waker ? oci_core_instance.waker[0].public_ip : oci_core_instance.a1.public_ip} -> http://localhost:8080"
 }

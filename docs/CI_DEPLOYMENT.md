@@ -130,19 +130,50 @@ Inputs:
 
 What the run does (≈ 10-20 min end to end):
 
-1. `terraform plan` — visible in the log, sanity check.
-2. `terraform apply` — **retries up to 20 times (~30 min) when OCI reports
+1. **Over-provision auto-check** — `scripts/preflight_check.py` queries the OCI
+   API and the terraform state *before* any plan/apply:
+   - servers already tracked in state and live → "already provisioned", apply
+     becomes an idempotent no-op refresh;
+   - servers exist but the state is empty (bucket/key changed, reset) → the
+     existing VCN/subnet/instances/IAM are **auto-adopted via
+     `terraform import`** so nothing gets duplicated;
+   - a duplicate project server or an Always Free budget breach (live A1 OCPUs
+     + planned > `TF_VAR_overprovision_max_ocpus`, default 4; or a 3rd AMD
+     micro) → **the run fails** instead of over-provisioning.
+2. `terraform plan` — visible in the log, sanity check. (A second,
+   terraform-native guard lives here: plan-time preconditions in
+   `terraform/main.tf` fail the plan when a duplicate `gh-runner-a1*` /
+   `gh-runner-waker*` instance is already live, independent of state.)
+3. `terraform apply` — **retries up to 20 times (~30 min) when OCI reports
    "Out of host capacity"** (the notorious A1 issue). If it still fails:
    re-run with a different `availability_domain_index`, or wait a few hours,
    or (fastest fix) upgrade the OCI account to Pay-As-You-Go — Always Free
    resources stay free, capacity priority improves dramatically.
-3. Cloud-init hardens and sets up both VMs (docker, ufw, fail2ban, unattended
+4. Cloud-init hardens and sets up both VMs (docker, ufw, fail2ban, unattended
    upgrades, qemu for multi-arch builds, swap).
-4. The **deploy-stack** job waits for cloud-init, rsyncs this repo to
+5. The **deploy-stack** job waits for cloud-init, rsyncs this repo to
    `/opt/oci-runner`, writes the controller `.env` (PAT, repos, pool sizing
    from your profile), builds the runner image, and starts everything; then
    the same for the waker with `ALWAYS_RESUME=true` (self-healing).
-5. The summary shows the VM IPs.
+6. The summary shows the VM IPs.
+
+**Over-provision guard fired — what now?** The preflight deliberately fails
+instead of creating a second server. Pick one:
+
+- *Duplicate exists (exit 4 / "multiple project servers")* — terminate the
+  surplus instance in the OCI console (Compute → Instances), then re-run
+  Provision.
+- *Untracked servers + abort mode (exit 3)* — the CI default is adopt; if you
+  set `PREFLIGHT_ON_UNTRACKED=abort`, either switch back or terminate the old
+  servers.
+- *Budget (exit 5)* — terminate/shrink other A1 instances, or consciously set
+  `TF_VAR_overprovision_max_ocpus` (free-only accounts: also lower the
+  profile, since Oracle stops instances above 2 OCPU / 12 GB).
+- Debug any time with `python3 scripts/preflight_check.py --json` from a
+  machine with the `OCI_*` env vars set.
+
+Exit codes of the preflight: `0` ok · `2` config · `3` untracked+abort ·
+`4` duplicate · `5` budget · `6` adoption failed (see the script docstring).
 
 **If the workflow fails at apply with `LimitExceeded` / quota:** some new
 free-tier tenancies ship with an A1 OCPU service limit of 0 — request an

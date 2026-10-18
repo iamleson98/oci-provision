@@ -91,8 +91,26 @@ jobs:
       - name: Terraform init (state in OCI Object Storage)
         run: bash scripts/tf_init.sh
 
+      - name: Auto-check - already provisioned? (over-provision guard)
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet oci
+          python3 scripts/preflight_check.py --on-untracked adopt
+
       - name: Terraform plan
-        run: terraform -ch-dir=terraform plan -input=false -no-color
+        id: plan
+        run: |
+          set +e
+          terraform -ch-dir=terraform plan -input=false -no-color -detailed-exitcode
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Auto-check: infrastructure is already provisioned and in sync - the apply below will be an idempotent no-op refresh."
+          elif [ "$RC" -eq 2 ]; then
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+          else
+            exit "$RC"
+          fi
 
       - name: Terraform apply (auto-retries while OCI reports capacity shortage)
         run: |
@@ -128,6 +146,8 @@ jobs:
             echo "|---|---|"
             echo "| A1 worker (${{ inputs.runner_profile }}) | \`${{ steps.out.outputs.a1_ip }}\` |"
             echo "| Waker (AMD micro) | \`${{ steps.out.outputs.waker_ip }}\` |"
+            echo ""
+            echo "Provision state: ${{ steps.plan.outputs.changes == 'false' && 'already provisioned - apply was a no-op refresh' || 'created/updated' }} (auto-checked before apply to prevent over-provisioning)."
             echo ""
             echo "The runner stack is being installed by the **deploy-stack** job below (takes ~10 min: cloud-init, docker, image builds)."
           } >> "$GITHUB_STEP_SUMMARY"

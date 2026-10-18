@@ -80,6 +80,11 @@ jobs:
       - name: Terraform init (state in OCI Object Storage)
         run: bash scripts/tf_init.sh
 
+      - name: Auto-check - already provisioned? (over-provision guard, report only)
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet oci
+          python3 scripts/preflight_check.py --on-untracked report
+
       - name: Terraform plan
         run: terraform -ch-dir=terraform plan -input=false -no-color
 

@@ -31,3 +31,10 @@ status_public  = false                 # true = expose waker status page to admi
 
 # --- safety -----------------------------------------------------------------------
 preserve_boot_volume = false           # keep A1 disk across terraform destroy
+
+# --- over-provision protection ----------------------------------------------------
+# Terraform refuses to create the A1 worker when live A1 OCPUs in the compartment
+# plus the planned worker would exceed this (plan-time precondition). 4 = the
+# post-June-2026 Always Free tenancy envelope; free-only accounts (stopped
+# above 2 OCPU / 12 GB) should use 2. CI: set via TF_VAR_overprovision_max_ocpus.
+overprovision_max_ocpus = 4

@@ -27,7 +27,7 @@
 | Piece | Where | What it does |
 |---|---|---|
 | **Bootstrap** workflow | GitHub Actions | Creates the versioned Object Storage bucket for terraform state, prints your namespace |
-| **Provision** workflow | GitHub Actions | `terraform apply` (auto-retries on A1 "out of capacity") → VMs → then SSHes in and installs the whole runner stack |
+| **Provision** workflow | GitHub Actions | **Auto-checks what's already provisioned** (adopts or refuses to duplicate), then `terraform apply` (auto-retries on A1 "out of capacity") → VMs → then SSHes in and installs the whole runner stack |
 | **Rollback** workflow | GitHub Actions | `terraform destroy` behind a `DESTROY` confirmation gate |
 | **Deploy stack** workflow | GitHub Actions | Reconfigure/redeploy the runner stack without touching infra |
 | **Doctor** workflow | GitHub Actions | Weekly + on-demand health check of the VM (disk, docker, controller, security) |
@@ -41,6 +41,16 @@ Two profiles (workflow input):
 
 * **`always-on`** *(default)* — A1 at **2 OCPU / 12 GB, 24/7**. Fits inside the post-June-2026 Always Free allowance (1,500 OCPU-h + 9,000 GB-h per month) on **any** account type. Zero billing risk.
 * **`burst`** — A1 at **4 OCPU / 24 GB**, powered off when idle; the waker boots it when jobs queue (~2 min) and the controller powers it off after 20 idle minutes. Same free hour-budget, double the throughput while awake.
+
+### Over-provision protection (auto-check: already provisioned?)
+
+Every provisioning path refuses to create a second server when one already exists — three layers:
+
+1. **CI preflight** (`scripts/preflight_check.py`, runs in Provision/Plan *before* plan/apply): queries the OCI API + terraform state and cross-checks them. Already provisioned → apply proceeds as a no-op refresh; state lost but servers exist → the existing stack is **auto-adopted via `terraform import`** instead of duplicated; a foreign duplicate or an Always Free budget breach (A1 OCPUs > 4 per tenancy, or a 3rd AMD micro) → the run **fails loudly**.
+2. **Terraform-native guards** (`terraform/main.tf` plan-time preconditions): `plan` fails — so `apply` never runs — when a duplicate `gh-runner-a1*`/`gh-runner-waker*` instance is already live, or live A1 OCPUs + planned exceed `overprovision_max_ocpus` (default 4 = the post-June-2026 free envelope; set 2 on free-only accounts).
+3. **capacity_hunter.sh guard**: the manual hunter refuses to start while any live A1 exists (override: `--allow-existing`).
+
+Runner *containers* are equally protected at runtime: the controller clamps `desired = min(MAX, max(MIN, busy + queued))`.
 
 ## Quickstart (browser only)
 
