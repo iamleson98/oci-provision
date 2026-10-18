@@ -32,17 +32,17 @@ data "oci_identity_availability_domains" "ads" {
 }
 
 # Latest Canonical Ubuntu 24.04 platform image for aarch64 (Ampere A1)
+# NOTE: no display_name regex filter on purpose. OCI renames builds
+# ("Canonical-Ubuntu-24.04-2026..." x86, "Canonical-Ubuntu-24.04-aarch64-..."
+# arm) and API-level filters already exclude Minimal builds (their
+# operating_system_version is "24.04 Minimal"), so the exact "24.04" +
+# shape + newest-first sort is precise. Verified live 2026-10 via the
+# Inspect workflow against ap-singapore-1.
 data "oci_core_images" "ubuntu_arm" {
   compartment_id           = local.compartment
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "24.04"
   shape                    = "VM.Standard.A1.Flex"
-
-  filter {
-    name   = "display_name"
-    values = ["^Canonical-Ubuntu-24\\.04-2.*"]
-    regex  = true
-  }
 
   sort_by    = "TIMECREATED"
   sort_order = "DESC"
@@ -56,12 +56,6 @@ data "oci_core_images" "ubuntu_x86" {
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "24.04"
   shape                    = "VM.Standard.E2.1.Micro"
-
-  filter {
-    name   = "display_name"
-    values = ["^Canonical-Ubuntu-24\\.04-2.*"]
-    regex  = true
-  }
 
   sort_by    = "TIMECREATED"
   sort_order = "DESC"
@@ -266,6 +260,11 @@ resource "oci_core_instance" "a1" {
   # runs - that is what actually prevents over-provisioning.
   lifecycle {
     precondition {
+      condition     = length(data.oci_core_images.ubuntu_arm.images) > 0
+      error_message = "No 'Canonical Ubuntu' 24.04 aarch64 platform image is available for VM.Standard.A1.Flex in this region. Run the Inspect workflow (read-only) to list what exists and adjust operating_system_version in terraform/main.tf."
+    }
+
+    precondition {
       condition     = length(local.live_project_a1) <= 1
       error_message = "Over-provision guard: ${length(local.live_project_a1)} non-terminated '${var.instance_name_prefix}-a1*' instances already exist in the compartment, but this configuration manages exactly ONE A1 worker. Creating another would double-burn the Always Free A1 allowance, so terraform refuses. Either terminate the surplus instance in the OCI console, or re-adopt the existing one with 'python3 scripts/preflight_check.py --on-untracked adopt' (see docs/TROUBLESHOOTING.md)."
     }
@@ -327,6 +326,11 @@ resource "oci_core_instance" "waker" {
   # configuration manages one of them. Refuse to create a second waker when
   # one is already live and unaccounted for.
   lifecycle {
+    precondition {
+      condition     = length(data.oci_core_images.ubuntu_x86[0].images) > 0
+      error_message = "No 'Canonical Ubuntu' 24.04 x86 platform image is available for VM.Standard.E2.1.Micro in this region. Run the Inspect workflow (read-only) to list what exists and adjust operating_system_version in terraform/main.tf."
+    }
+
     precondition {
       condition     = length(local.live_project_waker) <= 1
       error_message = "Over-provision guard: ${length(local.live_project_waker)} non-terminated '${var.instance_name_prefix}-waker*' instances already exist, but this configuration manages exactly ONE waker (Always Free includes 2 AMD micros per tenancy). Terminate the duplicate, or re-adopt the existing one with 'python3 scripts/preflight_check.py --on-untracked adopt' (see docs/TROUBLESHOOTING.md)."
