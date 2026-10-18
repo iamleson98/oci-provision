@@ -91,7 +91,8 @@ jobs:
           # Direct delete == what terraform force-unlock does internally
           # (removes the lock object; on the versioned bucket this adds a
           # delete marker, and the next conditional PUT succeeds).
-          oci os object delete --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ"
+          # --force skips the [y/N] confirmation prompt (no stdin in CI).
+          oci os object delete --force --bucket-name "$TF_STATE_BUCKET" --name "$LOCK_OBJ"
           echo "lock object deleted"
 
       - name: Verify lock released (authoritative object list)
