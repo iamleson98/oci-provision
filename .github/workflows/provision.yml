@@ -139,7 +139,19 @@ jobs:
           true
 
       - name: Terraform init (state in OCI Object Storage)
-        run: bash scripts/tf_init.sh
+        run: |
+          # Fail loudly WITH context: BucketNotFound here means the backend bucket
+          # is gone - and if Bootstrap's create also 409s on fresh names, the
+          # tenancy itself is blocking writes (see TROUBLESHOOTING.md).
+          set +e
+          OUT="$(bash scripts/tf_init.sh 2>&1)"
+          RC=$?
+          set -e
+          printf '%s\n' "$OUT"
+          if [ "$RC" != 0 ] && printf '%s' "$OUT" | grep -q 'BucketNotFound'; then
+            echo "::error title=State bucket missing::backend bucket not found - terraform init cannot continue. Re-run Bootstrap (it accepts a bucket_name input to try a fresh name). If that create also fails with 409 'not authorized', the tenancy is blocking ALL writes - see docs/TROUBLESHOOTING.md section 'Account write-block'."
+          fi
+          exit "$RC"
 
       - name: Auto-check - already provisioned? (over-provision guard)
         run: |
@@ -276,7 +288,16 @@ jobs:
           [ -n "$RUNNER_GITHUB_PAT" ] || { echo "::error title=Missing secret::RUNNER_GITHUB_PAT is not set (classic PAT with repo scope - see docs/CI_DEPLOYMENT.md)"; exit 1; }
 
       - name: Terraform init (state - IPs + generated SSH key)
-        run: bash scripts/tf_init.sh
+        run: |
+          set +e
+          OUT="$(bash scripts/tf_init.sh 2>&1)"
+          RC=$?
+          set -e
+          printf '%s\n' "$OUT"
+          if [ "$RC" != 0 ] && printf '%s' "$OUT" | grep -q 'BucketNotFound'; then
+            echo "::error title=State bucket missing::backend bucket not found - see the same-named step in the provision job above (Bootstrap + docs/TROUBLESHOOTING.md 'Account write-block')."
+          fi
+          exit "$RC"
 
       - name: Deploy controller + waker
         run: |

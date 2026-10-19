@@ -248,16 +248,41 @@ both and echo them on failure.
 
 * `OCI_NAMESPACE` must match exactly what the **Bootstrap** summary printed.
 * The bucket `oci-provision-tfstate2` must exist — re-run **Bootstrap**
-  (idempotent).
+  (idempotent; it now accepts a `bucket_name` input to probe a fresh name).
 * **Deleted-bucket name reservation:** if a bucket was deleted (e.g. while
   cleaning up), OCI keeps the name reserved for a while — `bucket get`
   returns 404 *and* `bucket create` returns 409 `BucketAlreadyExists` at the
-  same time. That exact combination is the tombstone, not an inconsistency:
-  either wait (minutes to hours) or move to a fresh bucket name (set it in
-  `bootstrap.yml` **and** `scripts/tf_init.sh`). This is why the repo moved
-  from `oci-provision-tfstate` to `oci-provision-tfstate2`. Losing the state
+  same time, **for that one previously-used name**. Either wait (minutes to
+  hours) or move to a fresh bucket name (dispatch **Bootstrap** with a
+  `bucket_name` input to test/probe; for a *permanent* switch also update
+  the `TF_STATE_BUCKET` default in `scripts/tf_init.sh` and the other
+  workflow env blocks). This is why the repo moved from
+  `oci-provision-tfstate` to `oci-provision-tfstate2`. Losing the state
   file is not fatal: the next Provision run's preflight auto-adopts the live
   resources via `terraform import`.
+* **Account write-block (all Object Storage writes denied):** if `bucket
+  create` returns 409 `BucketAlreadyExists` ("either exists or you are not
+  authorized to create it") even for a **fresh, never-used name** — while
+  `oci os ns get` and `oci os bucket list` still succeed — the *account*
+  is refusing writes, not the name. A second signature: a deleted bucket
+  stuck in the `bucket list` output for many hours (a ghost bucket: it
+  lists, but `get` 404s). Causes: free-tier account suspension/
+  restriction, a tenancy termination in progress, or the API user's IAM
+  permissions were demoted. Nothing in this repo can fix that from CI —
+  check in the OCI console:
+  1. Try creating a bucket **by hand** (Object Storage → Create Bucket).
+     If the console *also* refuses → account-level block: look for a
+     termination/suspension banner (Profile → Tenancy, Account Management),
+     settle billing/identity verification, or open a support request. If
+     the console *works* → the API user lost permission: put user
+     `OCI_USER_OCID` back in a group with
+     `Allow group <group> to manage buckets in tenancy`.
+  2. Once writes work again: re-run **Bootstrap** (fresh `bucket_name` if
+     the old name is still reserved), then run **Provision** — preflight
+     auto-adopts the live VCN/subnet and the scheduled hunt resumes on its
+     own. Until then every scheduled run will fail red at `terraform init`
+     by design (visible, not swallowed); disable the Provision workflow if
+     the emails get noisy.
 * `OCI_PRIVATE_KEY` must be the full PEM including BEGIN/END lines, and
   `OCI_FINGERPRINT` must match that key pair.
 
