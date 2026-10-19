@@ -7,6 +7,10 @@ on:
         description: "Make sure bucket versioning is enabled (also upgrades an existing bucket)"
         type: boolean
         default: true
+      bucket_name:
+        description: "State bucket name - use a FRESH name if the old one is stuck in a deleted-name reservation (get 404 + create 409)"
+        type: string
+        default: "oci-provision-tfstate2"
 
 permissions:
   contents: read
@@ -27,7 +31,7 @@ jobs:
       OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
       OCI_CLI_REGION: ${{ secrets.OCI_REGION }}
       OCI_CLI_AUTH: api_key
-      TF_STATE_BUCKET: oci-provision-tfstate2
+      TF_STATE_BUCKET: ${{ inputs.bucket_name || 'oci-provision-tfstate2' }}
     steps:
       - name: Preflight - required secrets
         run: |
@@ -87,7 +91,7 @@ jobs:
               echo "::error title=bucket create failed::see output below"
               printf '%s\n' "$OUT" | sed 's/^/    /'
               if printf '%s' "$OUT" | grep -q 'BucketAlreadyExists'; then
-                echo "::error title=Bucket name reserved::a bucket named '$TF_STATE_BUCKET' was deleted earlier - OCI keeps deleted bucket names reserved for a while (get returns 404 while create returns 409). Either wait and re-run, or pick a fresh TF_STATE_BUCKET name here AND in scripts/tf_init.sh."
+                echo "::error title=Bucket name reserved OR account write-block::get returned 404 but create returned 409 for '$TF_STATE_BUCKET'. If this name was never used before, the tenancy is blocking writes (check account status / IAM in the OCI console). Re-run this workflow with a different bucket_name input to test a fresh name."
               fi
               exit 1
             fi
