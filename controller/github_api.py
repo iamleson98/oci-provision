@@ -214,12 +214,17 @@ class GitHubClient:
             if code == 200 and isinstance(body, dict):
                 run_ids.extend(r["id"] for r in body.get("workflow_runs", []))
         # Cap the deep scan (rate-limit hygiene); newest runs come first.
+        # NOTE: the per-run jobs endpoint has NO status filter (the param is
+        # silently ignored - only filter=latest|all is documented), so we
+        # fetch unfiltered and match status client-side.
         for rid in run_ids[:MAX_QUEUE_RUNS]:
             jobs = self._paginate(
                 f"{API}/repos/{scope.owner}/{scope.name}/actions/runs/{rid}/jobs",
-                {"status": "queued"},
             )
-            count += sum(1 for j in jobs if match.intersection(j.get("labels") or []))
+            count += sum(
+                1 for j in jobs
+                if j.get("status") == "queued" and match.intersection(j.get("labels") or [])
+            )
         self._queue_cache[key] = (now, count)
         if run_ids:
             log.info("queue scan %s: %d label-matched queued job(s)", key, count)
