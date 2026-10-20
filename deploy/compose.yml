@@ -8,6 +8,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../secrets:/opt/oci-runner/secrets:ro
+      # read-only so the controller's disk_free_gb (statvfs /var/lib/docker)
+      # reports the REAL host docker disk instead of null
+      - /var/lib/docker:/var/lib/docker:ro
     ports:
       # Bound to localhost on the VM: reach it via SSH tunnel
       #   ssh -N -L 8080:localhost:8080 ubuntu@<a1-ip>
