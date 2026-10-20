@@ -26,7 +26,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq libicu74 tar gzip unzip zip gnupg \
       openssh-client lsb-release sudo python3-minimal \
+      xz-utils bzip2 file \
+      build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*
+# ^^ CI baseline matching what ubuntu-latest jobs assume:
+#    xz/bzip2 (release tarballs), build-essential + pkg-config (Rust and
+#    other builds need a default linker `cc`; ubuntu-latest ships one).
 
 # Docker CLI + buildx + compose plugins from Docker's official apt repo (native arch)
 RUN install -m 0755 -d /etc/apt/keyrings \
