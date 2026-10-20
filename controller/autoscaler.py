@@ -92,6 +92,22 @@ class Autoscaler:
     def _is_ours(self, runner: dict) -> bool:
         return str(runner.get("name", "")).startswith(self.cfg.container_prefix)
 
+    def _scope_slug_of(self, name: str) -> str:
+        """Extract the scope slug from a runner/container name.
+
+        Names are f"{prefix}-{scope.slug}-{uuid8}" (spawn_runner); the slug
+        itself may contain hyphens, so strip the prefix and the trailing
+        -<8 hex chars> segment.
+        """
+        prefix = self.cfg.container_prefix + "-"
+        if not name.startswith(prefix):
+            return ""
+        rest = name[len(prefix):]
+        head, _, tail = rest.rpartition("-")
+        if head and len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
+            return head
+        return rest
+
     # ------------------------------------------------------------------- tick
 
     def tick(self) -> None:
@@ -114,20 +130,52 @@ class Autoscaler:
         busy_names = [r["name"] for r in ours if r.get("busy") and r.get("status") == "online"]
         offline_names = {r["name"] for r in ours if r.get("status") == "offline"}
 
+        # ------------------------------------------------- per-scope supply/demand
+        # A runner registered for repo A can never serve repo B's queued jobs,
+        # so scale decisions must be per scope, not global. Runner names embed
+        # the scope slug, which gives us the mapping for free.
+        online_by_scope: dict[str, int] = {}
+        busy_by_scope: dict[str, int] = {}
+        for r in ours:
+            if r.get("status") != "online":
+                continue
+            slug = self._scope_slug_of(str(r.get("name", "")))
+            if not slug:
+                continue
+            online_by_scope[slug] = online_by_scope.get(slug, 0) + 1
+            if r.get("busy"):
+                busy_by_scope[slug] = busy_by_scope.get(slug, 0) + 1
+
+        demand: dict[str, int] = {}   # queued + busy jobs per scope
+        deficit: dict[str, int] = {}  # jobs no online runner of that scope can serve
+        for scope in cfg.scopes:
+            slug = scope.slug
+            demand[slug] = queued.get(slug, 0) + busy_by_scope.get(slug, 0)
+            deficit[slug] = max(0, demand[slug] - online_by_scope.get(slug, 0))
+        total_demand = sum(demand.values())
+        total_deficit = sum(deficit.values())
+
         containers = self.dm.list_containers()
         running = [c for c in containers if c.get("State") == "running"]
         exited = [c for c in containers if c.get("State") == "exited"]
         running_names = {c["name"] for c in running}
         exited_names = {c["name"] for c in exited}
 
-        total_queued = sum(queued.values())
-        desired = min(cfg.max_runners, max(cfg.min_runners, len(busy_names) + total_queued))
+        desired = min(cfg.max_runners, max(cfg.min_runners, total_demand))
 
         # ------------------------------------------------------------ scale up
+        # Deficit-driven: spawn for scopes whose queued jobs have no matching
+        # online runner. MIN fill only when there is no deficit (warm runner).
+        # While any deficit exists we never trim (elif chain): a job without
+        # a runner must not lose capacity to a scale-down sweep.
         if _now() < self.state.get("spawn_paused_until", 0):
             log.debug("spawn paused (cooldown)")
-        elif len(running) < desired:
-            self._scale_up(running, desired, queued)
+        elif total_deficit > 0:
+            need = min(cfg.max_runners - len(running), total_deficit)
+            if need > 0:
+                self._scale_up(running, need, deficit)
+        elif len(running) < cfg.min_runners:
+            self._scale_up(running, cfg.min_runners - len(running), {})
 
         # ---------------------------------------------------------- scale down
         elif len(running) > desired:
@@ -138,7 +186,7 @@ class Autoscaler:
         self._deregister_stale(offline_names, running_names)
 
         # ------------------------------------------------------------ idle bookkeeping
-        active = total_queued > 0 or len(busy_names) > 0 or len(running) > 0
+        active = total_demand > 0 or len(running) > 0
         if active:
             self._last_activity = _now()
             self.state["idle_since"] = None
@@ -161,17 +209,16 @@ class Autoscaler:
 
     # ------------------------------------------------------------- scale up
 
-    def _scale_up(self, running: list[dict], desired: int, queued: dict[str, int]) -> None:
+    def _scale_up(self, running: list[dict], count: int, weights: dict[str, int]) -> None:
+        """Spawn `count` runner containers, weighted toward the given scopes.
+
+        weights maps scope-slug -> weight; scopes absent or 0 are only picked
+        when every weight is 0 (MIN-fill warm runner goes to the first scope).
+        """
         cfg = self.cfg
-        deficit = desired - len(running)
-        # Weight spawns toward the scopes with the deepest queues; idle runners
-        # (queued=0 scopes) only serve as MIN fill.
-        weights: dict[str, int] = {}
-        for scope in cfg.scopes:
-            weights[scope.slug] = queued.get(scope.slug, 0)
         existing = {c["name"] for c in running}
         spawned = 0
-        for _ in range(deficit):
+        for _ in range(count):
             scope = self._pick_scope(weights)
             name = f"{cfg.container_prefix}-{scope.slug}-{uuid.uuid4().hex[:8]}"
             try:
@@ -191,7 +238,7 @@ class Autoscaler:
                 break
         if spawned:
             self.event(
-                f"scaled up: +{spawned} runner(s), running={len(running) + spawned}, desired={desired}"
+                f"scaled up: +{spawned} runner(s), running={len(running) + spawned}"
             )
 
     def _pick_scope(self, weights: dict[str, int]):

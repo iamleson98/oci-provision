@@ -24,6 +24,9 @@ COMMON_HEADERS = {
     "User-Agent": "oci-github-runner-controller",
 }
 MAX_PAGES = 5
+# Queue deep-scan: cache TTL and max runs inspected per scope per scan.
+QUEUE_SCAN_TTL = 30
+MAX_QUEUE_RUNS = 12
 
 
 class GitHubClient:
@@ -40,6 +43,7 @@ class GitHubClient:
         self._token_exp: datetime | None = None
         self._token_mode = cfg.auth_mode
         self._reg_tokens: dict[str, tuple[str, datetime]] = {}
+        self._queue_cache: dict[str, tuple[float, int]] = {}
 
     # ------------------------------------------------------------------ auth
 
@@ -179,30 +183,42 @@ class GitHubClient:
     def queued_jobs(self, scope) -> int:
         """Number of queued jobs that OUR labels can serve.
 
-        Repo scopes query the per-repository workflow-job queue and filter
-        client-side by label. Org scopes without a monitored repo list return 0
-        (org-wide queue introspection is not exposed by the REST API).
+        The repo-wide workflow-jobs endpoint (/actions/workflow-jobs) returns
+        404 for these tokens, so we enumerate queued AND in_progress runs and
+        fetch each run's queued jobs (an in_progress run still holds queued
+        jobs waiting for a runner - counting only fully-queued runs starves
+        multi-job workflows). Results are cached per scope for QUEUE_SCAN_TTL
+        seconds to respect rate limits.
+
+        Org scopes without a monitored repo list return 0 (org-wide queue
+        introspection is not exposed by the REST API).
         """
         if scope.kind != "repo":
             return 0
-        url = f"{API}/repos/{scope.owner}/{scope.name}/actions/workflow-jobs"
-        jobs = self._paginate(url, {"status": "queued"})
-        if not jobs:
-            # Fallback: count queued workflow *runs* (coarser, but keeps scaling alive
-            # if the job-level endpoint is unavailable to the token).
+        key = f"{scope.kind}:{scope.owner}/{scope.name}"
+        now = time.time()
+        cached = self._queue_cache.get(key)
+        if cached and now - cached[0] < QUEUE_SCAN_TTL:
+            return cached[1]
+
+        match = set(self.cfg.match_labels)
+        count = 0
+        run_ids: list[int] = []
+        for status in ("queued", "in_progress"):
             code, body = self._get(
                 f"{API}/repos/{scope.owner}/{scope.name}/actions/runs",
-                {"status": "queued", "per_page": 1},
+                {"status": status, "per_page": 10},
             )
             if code == 200 and isinstance(body, dict):
-                total = body.get("total_count", 0)
-                if total:
-                    log.warning(
-                        "workflow-jobs endpoint empty; falling back to queued runs count=%s for %s",
-                        total, scope.slug,
-                    )
-                    return int(total)
-            return 0
-        match = set(self.cfg.match_labels)
-        matched = sum(1 for j in jobs if match.intersection(j.get("labels") or []))
-        return matched
+                run_ids.extend(r["id"] for r in body.get("workflow_runs", []))
+        # Cap the deep scan (rate-limit hygiene); newest runs come first.
+        for rid in run_ids[:MAX_QUEUE_RUNS]:
+            jobs = self._paginate(
+                f"{API}/repos/{scope.owner}/{scope.name}/actions/runs/{rid}/jobs",
+                {"status": "queued"},
+            )
+            count += sum(1 for j in jobs if match.intersection(j.get("labels") or []))
+        self._queue_cache[key] = (now, count)
+        if run_ids:
+            log.info("queue scan %s: %d label-matched queued job(s)", key, count)
+        return count
