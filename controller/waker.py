@@ -103,16 +103,21 @@ def main() -> int:
         "last_wake": None,
         "last_tick": None,
         "always_resume": ALWAYS_RESUME,
+        "events": [],
     }
 
     def snapshot() -> dict:
+        # NOTE: returns a COPY - fine for one-off dumps, but the status server
+        # needs the live `state` dict (see start_server call below).
         return {**state, "events": [{"ts": _iso(ts), "msg": m} for ts, m in list(events)[-25:]]}
 
     def event(msg: str) -> None:
         events.append((time.time(), msg))
+        # keep the live state's events fresh for the status server
+        state["events"] = [{"ts": _iso(ts), "msg": m} for ts, m in list(events)[-25:]]
         log.info("%s", msg)
 
-    server, _thread = status_server.start_server(cfg, snapshot(), lambda: False)
+    server, _thread = status_server.start_server(cfg, state, lambda: False)
     log.info("status server on %s:%d", cfg.status_bind, cfg.status_port)
 
     stop = {"flag": False}

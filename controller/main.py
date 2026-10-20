@@ -54,8 +54,11 @@ def main() -> int:
         return 2
 
     scaler = Autoscaler(cfg, gh, dm)
+    # Pass the LIVE state dict (not a snapshot copy): /healthz flips to 200
+    # only after the first successful tick, so `compose up --wait` gates
+    # systemd start on a controller that actually works.
     server, thread = status_server.start_server(
-        cfg, scaler.snapshot(), scaler.idle_shutdown_ready
+        cfg, scaler.state, scaler.idle_shutdown_ready
     )
     log.info("status server listening on %s:%d", cfg.status_bind, cfg.status_port)
 

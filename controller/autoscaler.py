@@ -63,6 +63,7 @@ class Autoscaler:
             "spawn_paused_until": 0,
             "busy_names": [],
             "auth_mode": cfg.auth_mode,
+            "events": [],
         }
         self._spawn_failures: deque[float] = deque()
         self._offline_seen: dict[str, float] = {}
@@ -73,9 +74,16 @@ class Autoscaler:
 
     def event(self, msg: str) -> None:
         self.events.append((_now(), msg))
+        # keep the live state's events fresh for the status server
+        self.state["events"] = [
+            {"ts": _iso(ts), "msg": m} for ts, m in list(self.events)[-25:]
+        ]
         log.info("%s", msg)
 
     def snapshot(self) -> dict:
+        # NOTE: returns a COPY - fine for one-off dumps, but the status server
+        # must be handed scaler.state (the live dict) so /healthz and
+        # /api/status reflect reality after every tick.
         return {
             **self.state,
             "events": [{"ts": _iso(ts), "msg": msg} for ts, msg in list(self.events)[-25:]],
