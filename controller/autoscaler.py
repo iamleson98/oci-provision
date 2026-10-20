@@ -156,6 +156,21 @@ class Autoscaler:
         total_deficit = sum(deficit.values())
 
         containers = self.dm.list_containers()
+        if containers is None:
+            # Docker state unknown (daemon error / snapshotter race): treat as
+            # "no new information" - NEVER as "zero runners" (spawn storm).
+            # Update what we know, skip scale/reap/deregister this tick.
+            log.warning("docker container listing failed - scaling paused this tick")
+            self.state.update(
+                healthy=True,
+                queued=queued,
+                runners_online=len([r for r in ours if r.get("status") == "online"]),
+                runners_busy=len(busy_names),
+                last_tick=_iso(_now()),
+                busy_names=busy_names[:20],
+                docker_list_ok=False,
+            )
+            return
         running = [c for c in containers if c.get("State") == "running"]
         exited = [c for c in containers if c.get("State") == "exited"]
         running_names = {c["name"] for c in running}
@@ -221,6 +236,7 @@ class Autoscaler:
         # -------------------------------------------------------------- publish
         self.state.update(
             healthy=True,
+            docker_list_ok=True,
             queued=queued,
             runners_online=len([r for r in ours if r.get("status") == "online"]),
             runners_busy=len(busy_names),

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from typing import Any
 
 log = logging.getLogger("docker")
@@ -37,8 +38,21 @@ class DockerManager:
 
     # ------------------------------------------------------------ inventory
 
-    def list_containers(self) -> list[dict[str, Any]]:
+    def list_containers(self) -> list[dict[str, Any]] | None:
+        """Managed runner containers, or None when docker state is UNKNOWN.
+
+        A failed `docker ps` must NOT look like "zero runners": the
+        autoscaler would over-spawn into a storm (observed under heavy
+        builds, where containerd's snapshotter usage races with build
+        temp-file churn). Callers skip scale decisions on None.
+        """
         proc = self._run(["ps", "-a", "--filter", f"label={MANAGED_LABEL}", "--format", "{{json .}}"])
+        if proc.returncode != 0:
+            # one retry - the snapshotter race is transient
+            time.sleep(1)
+            proc = self._run(["ps", "-a", "--filter", f"label={MANAGED_LABEL}", "--format", "{{json .}}"])
+            if proc.returncode != 0:
+                return None
         out: list[dict[str, Any]] = []
         for line in (proc.stdout or "").splitlines():
             try:
