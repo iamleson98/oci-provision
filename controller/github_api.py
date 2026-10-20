@@ -125,7 +125,9 @@ class GitHubClient:
                 return items
             page: list[dict] = []
             if isinstance(body, dict):
-                page = body.get("workflow_jobs") or body.get("runners") or []
+                # workflow-jobs -> "workflow_jobs", runners -> "runners",
+                # per-run jobs -> "jobs" (used by the queue deep-scan)
+                page = body.get("workflow_jobs") or body.get("runners") or body.get("jobs") or []
             items.extend(page)
             if len(page) < 100:
                 break
