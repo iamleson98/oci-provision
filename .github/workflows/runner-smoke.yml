@@ -1,0 +1,29 @@
+name: runner-smoke
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    # End-to-end health check of the self-hosted fleet:
+    # controller -> ephemeral runner container -> sibling docker build.
+    # Run it from the Actions tab ("Run workflow") after deploying or
+    # upgrading the runner stack.
+    runs-on: [self-hosted, oci-runner]
+    steps:
+      - name: Runner environment
+        run: |
+          echo "runner host: $(hostname)"
+          uname -a
+          echo "cpus: $(nproc)"
+          free -h | head -2 || true
+
+      - name: Core tools present
+        run: |
+          git --version
+          jq --version
+          python3 --version
+          docker --version
+
+      - name: Sibling docker works (host docker.sock mounted)
+        run: docker run --rm alpine:3 echo "docker.sock OK - sibling containers work"
