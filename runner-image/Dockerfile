@@ -50,14 +50,15 @@ WORKDIR /home/runner/actions-runner
 # Official runner agent, pinned + verified per arch.
 # set -eu keeps sha256sum -c fatal: a bad download MUST fail the build
 # (the old `... || true` chaining silently masked checksum failures).
+# NOTE: GitHub release assets use "x64" where BuildKit/debian use "amd64".
 RUN set -eu; \
     case "${TARGETARCH}" in \
-      arm64) RUNNER_CHECKSUM=628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b ;; \
-      amd64) RUNNER_CHECKSUM=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32 ;; \
+      arm64) AGENT_ARCH=arm64; RUNNER_CHECKSUM=628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b ;; \
+      amd64) AGENT_ARCH=x64;   RUNNER_CHECKSUM=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32 ;; \
       *) echo "ERROR: unsupported TARGETARCH='${TARGETARCH}' (build with BuildKit or pass --build-arg TARGETARCH)" >&2; exit 1 ;; \
     esac; \
     curl -fsSLo runner.tar.gz \
-      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${TARGETARCH}-${RUNNER_VERSION}.tar.gz"; \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${AGENT_ARCH}-${RUNNER_VERSION}.tar.gz"; \
     echo "${RUNNER_CHECKSUM}  runner.tar.gz" | sha256sum -c -; \
     tar xzf runner.tar.gz; \
     rm runner.tar.gz; \
