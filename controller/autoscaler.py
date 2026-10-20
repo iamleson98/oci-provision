@@ -166,12 +166,37 @@ class Autoscaler:
         # ------------------------------------------------------------ scale up
         # Deficit-driven: spawn for scopes whose queued jobs have no matching
         # online runner. MIN fill only when there is no deficit (warm runner).
-        # While any deficit exists we never trim (elif chain): a job without
-        # a runner must not lose capacity to a scale-down sweep.
+        # While any deficit exists we never trim BUSY capacity; but when MAX is
+        # saturated by idle runners from quiet scopes, free their slots first
+        # (a warm runner must not starve a queued job).
         if _now() < self.state.get("spawn_paused_until", 0):
             log.debug("spawn paused (cooldown)")
         elif total_deficit > 0:
-            need = min(cfg.max_runners - len(running), total_deficit)
+            free_slots = cfg.max_runners - len(running)
+            effective_running = len(running)
+            if free_slots <= 0:
+                quiet = {slug for slug, want in demand.items() if want == 0}
+                busy = set(busy_names)
+                candidates = [
+                    c for c in running
+                    if c["name"] not in busy
+                    and self._scope_slug_of(c["name"]) in quiet
+                    and _now() - self._spawn_ts.get(c["name"], 0) > REGISTRATION_GRACE_S
+                ]
+                # newest first: the least-settled warm runners go first
+                candidates.sort(key=lambda c: self._spawn_ts.get(c["name"], 0), reverse=True)
+                victims = [c["name"] for c in candidates[:total_deficit]]
+                if victims:
+                    self.dm.stop_containers(victims, grace=30)
+                    self.dm.remove_containers(victims, force=True)
+                    for n in victims:
+                        self._spawn_ts.pop(n, None)
+                    effective_running -= len(victims)
+                    self.event(
+                        f"freed {len(victims)} idle runner slot(s) from quiet scopes for queued jobs"
+                    )
+                    free_slots = cfg.max_runners - effective_running
+            need = min(free_slots, total_deficit)
             if need > 0:
                 self._scale_up(running, need, deficit)
         elif len(running) < cfg.min_runners:
@@ -237,9 +262,7 @@ class Autoscaler:
             if name in existing:
                 break
         if spawned:
-            self.event(
-                f"scaled up: +{spawned} runner(s), running={len(running) + spawned}"
-            )
+            self.event(f"scaled up: +{spawned} runner(s)")
 
     def _pick_scope(self, weights: dict[str, int]):
         scopes = self.cfg.scopes
