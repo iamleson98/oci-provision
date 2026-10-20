@@ -33,6 +33,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    xz/bzip2 (release tarballs), build-essential + pkg-config (Rust and
 #    other builds need a default linker `cc`; ubuntu-latest ships one).
 
+# Node.js LTS from NodeSource: ubuntu-latest ships Node preinstalled and CI
+# jobs implicitly rely on it (bunx/node tool fallbacks, JS scripts). Without
+# it, JS toolchains silently diverge from GitHub-hosted behavior (e.g.
+# vitest's forks pool + jsdom break when forced to run under Bun).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
 # Docker CLI + buildx + compose plugins from Docker's official apt repo (native arch)
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
