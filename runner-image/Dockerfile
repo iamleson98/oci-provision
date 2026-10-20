@@ -1,20 +1,24 @@
-# Ephemeral GitHub Actions runner image (linux/arm64).
-# Built natively on the Ampere A1 worker VM by deploy/install.sh.
+# Ephemeral GitHub Actions runner image (linux/arm64 and linux/amd64).
+# Built natively on the worker VM by deploy/install.sh - BuildKit's predefined
+# TARGETARCH build arg selects the matching agent and docker apt repo.
 #
 # Contents:
-#   * official actions/runner agent (pinned + checksum-verified), arm64
+#   * official actions/runner agent (pinned + checksum-verified per arch)
 #   * docker CLI + buildx + compose plugins -> jobs can build images through
 #     the mounted host docker.sock (sibling containers)
 #   * small set of universally useful build tools; workflows install the rest
 FROM ubuntu:24.04
 
+# TARGETARCH is auto-populated by BuildKit (arm64 on A1, amd64 on x86_64 hosts);
+# deploy/install.sh also passes it explicitly as a safety net.
+ARG TARGETARCH
 ARG RUNNER_VERSION=2.338.0
-ARG RUNNER_CHECKSUM=628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b
-# ^^ sha256 of actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz (release v2.338.0, 2026-10-06)
+# ^^ per-arch sha256 checksums of actions-runner-linux-<arch>-${RUNNER_VERSION}.tar.gz
+#    (release v2.338.0, 2026-10-06) are pinned inside the fetch RUN step.
 
 LABEL oci-runner.keep=1 \
       org.opencontainers.image.title="oci-github-runner runner" \
-      org.opencontainers.image.description="Ephemeral GitHub Actions runner (arm64) with docker CLI"
+      org.opencontainers.image.description="Ephemeral GitHub Actions runner (arm64/amd64) with docker CLI"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUNNER_ALLOW_RUNASROOT=0
@@ -24,11 +28,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-client lsb-release sudo python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI + buildx + compose plugins from Docker's official arm64 apt repo
+# Docker CLI + buildx + compose plugins from Docker's official apt repo (native arch)
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+    && echo "deb [arch=${TARGETARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
        > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin \
@@ -43,14 +47,22 @@ RUN useradd -m -u 1001 -s /bin/bash runner \
 
 WORKDIR /home/runner/actions-runner
 
-# Official runner agent, pinned + verified
-RUN curl -fsSLo runner.tar.gz \
-      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz" \
-    && echo "${RUNNER_CHECKSUM}  runner.tar.gz" | sha256sum -c - \
-    && tar xzf runner.tar.gz \
-    && rm runner.tar.gz \
-    && ./bin/installdependencies.sh || true \
-    && chown -R runner:runner /home/runner/actions-runner
+# Official runner agent, pinned + verified per arch.
+# set -eu keeps sha256sum -c fatal: a bad download MUST fail the build
+# (the old `... || true` chaining silently masked checksum failures).
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      arm64) RUNNER_CHECKSUM=628b4a7258487b80c1d3c221095a7ded349f5ae0175fd3dfab708d07428f041b ;; \
+      amd64) RUNNER_CHECKSUM=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32 ;; \
+      *) echo "ERROR: unsupported TARGETARCH='${TARGETARCH}' (build with BuildKit or pass --build-arg TARGETARCH)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo runner.tar.gz \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${TARGETARCH}-${RUNNER_VERSION}.tar.gz"; \
+    echo "${RUNNER_CHECKSUM}  runner.tar.gz" | sha256sum -c -; \
+    tar xzf runner.tar.gz; \
+    rm runner.tar.gz; \
+    ./bin/installdependencies.sh || true; \
+    chown -R runner:runner /home/runner/actions-runner
 
 COPY --chown=runner:runner entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh

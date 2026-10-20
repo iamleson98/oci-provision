@@ -30,8 +30,11 @@ install_controller() {
   command -v docker >/dev/null || die "docker not installed - cloud-init should have done this"
   cd "$ROOT"
 
-  log "building runner image (arm64, pinned actions/runner version)..."
-  docker build -q -t oci-runner/runner:latest runner-image/
+  log "building runner image (native arch, pinned actions/runner version)..."
+  # BuildKit auto-sets TARGETARCH, but pass it explicitly so even a legacy
+  # builder picks the right agent (arm64 on A1, amd64 on x86_64 hosts).
+  ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"
+  docker build -q --build-arg TARGETARCH="${ARCH}" -t oci-runner/runner:latest runner-image/
 
   log "building controller image..."
   docker compose -f deploy/compose.yml build controller
